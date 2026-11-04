@@ -5,7 +5,7 @@ Agent chạy trên Android (Termux Root)
 - Lưu trữ toàn bộ dữ liệu tại: /storage/emulated/0/
 - Hỗ trợ Nạp Cookie (SQLite Injection) theo định dạng tk:mk:cookie
 - Tự động kiểm tra xác minh 2 lần (Xác minh Roblox API + Kiểm tra SQLite readback)
-- Báo cáo kết quả chi tiết lên Firebase để hiển thị trên Web Vercel
+- Báo cáo tiến độ thời gian thực (Realtime Progress) lên Firebase
 """
 
 import os
@@ -64,7 +64,7 @@ def run_cmd(cmd):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=12
+            timeout=10
         )
         return res.stdout.strip()
     except Exception:
@@ -81,7 +81,7 @@ def verify_cookie_with_roblox(cookie):
             "Cookie": cookie_header,
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         })
-        with urllib.request.urlopen(req, timeout=8) as r:
+        with urllib.request.urlopen(req, timeout=6) as r:
             if r.status == 200:
                 data = json.loads(r.read().decode())
                 log(f"[✓] Roblox xác thực: {data.get('name')} (Display: {data.get('displayName')}, ID: {data.get('id')})")
@@ -105,29 +105,25 @@ def get_pkg_owner(pkg):
 def init_app_webview(pkg):
     cookie_path = f"/data/data/{pkg}/app_webview/Default/Cookies"
     if not os.path.exists(cookie_path):
+        log(f"[*] Khởi tạo thư mục WebView cho {pkg}...")
         run_cmd(f"am start -n {pkg}/com.roblox.client.startup.LauncherAliasMain")
-        time.sleep(4)
+        time.sleep(3)
         run_cmd(f"am force-stop {pkg}")
         time.sleep(1)
 
 def inject_cookie_to_pkg(pkg, cookie_val):
-    """Nạp trực tiếp .ROBLOSECURITY vào Chromium SQLite Cookies của app"""
+    """Nạp trực tiếp .ROBLOSECURITY vào Chromium SQLite Cookies của app (CỰC NHANH)"""
     log(f"Đang nạp Cookie vào {pkg}...")
     run_cmd(f"am force-stop {pkg}")
-    time.sleep(1)
-    init_app_webview(pkg)
 
-    paths_to_check = [
-        f"/data/data/{pkg}/app_webview/Default/Cookies",
-        f"/data/data/{pkg}/app_webview/Cookies"
-    ]
-    cookie_path = None
-    for p in paths_to_check:
-        if os.path.exists(p):
-            cookie_path = p
-            break
+    cookie_path = f"/data/data/{pkg}/app_webview/Default/Cookies"
+    if not os.path.exists(cookie_path):
+        cookie_path = f"/data/data/{pkg}/app_webview/Cookies"
+        if not os.path.exists(cookie_path):
+            init_app_webview(pkg)
+            cookie_path = f"/data/data/{pkg}/app_webview/Default/Cookies"
 
-    if not cookie_path:
+    if not os.path.exists(cookie_path):
         log(f"[X] Không tìm thấy Cookies database của {pkg}!")
         return False, False
 
@@ -180,20 +176,20 @@ def inject_cookie_to_pkg(pkg, cookie_val):
 
         conn.commit()
 
-        # Kiểm tra lần 2: Đọc lại SQLite để đảm bảo dữ liệu đã ghi thành công
+        # Kiểm tra lần 2: Đọc lại SQLite
         cur.execute("SELECT value FROM cookies WHERE host_key = '.roblox.com' AND name = '.ROBLOSECURITY'")
         readback_row = cur.fetchone()
         sqlite_verified = bool(readback_row and readback_row[0] == cookie_val)
         conn.close()
 
-        # Cấp lại quyền cho app
+        # Cấp lại quyền cho app đọc file SQLite
         for ext in ['', '-journal', '-wal', '-shm']:
             f = cookie_path + ext
             if os.path.exists(f):
                 os.chown(f, uid, gid)
                 os.chmod(f, 0o660)
 
-        log(f"[✓] Đã nạp Cookie vào {pkg}! (Kiểm tra lại SQLite: {'KHỚP 100%' if sqlite_verified else 'Lỗi đọc lại'})")
+        log(f"[✓] Đã nạp Cookie vào {pkg}! (SQLite Readback: {'KHỚP 100%' if sqlite_verified else 'Lỗi'})")
         return True, sqlite_verified
     except Exception as e:
         log(f"[X] Lỗi khi inject cookie vào {pkg}: {e}")
@@ -231,9 +227,7 @@ def is_running(pkg):
     return bool(pid)
 
 def kill_app(pkg):
-    log(f"Dừng ứng dụng: {pkg}")
     run_cmd(f"am force-stop {pkg}")
-    time.sleep(1)
 
 def launch_game(pkg, place_id, job_id=""):
     log(f"Khởi chạy {pkg} vào Place {place_id}...")
@@ -256,7 +250,7 @@ def arrange_2x2(tabs):
     for i, tab in enumerate(tabs[:4]):
         pkg = tab.get("package")
         run_cmd(f"am start --windowingMode 5 -p {pkg}")
-        time.sleep(1)
+        time.sleep(0.5)
         tasks = run_cmd("dumpsys activity tasks")
         task_id = None
         for line in tasks.splitlines():
@@ -270,7 +264,6 @@ def arrange_2x2(tabs):
     log("Đã căn xong 2x2!")
 
 def take_and_upload_screenshot(fb_url):
-    log("Đang chụp ảnh màn hình...")
     run_cmd(f"screencap -p {SCREEN_RAW}")
     if not os.path.exists(SCREEN_RAW):
         return
@@ -290,10 +283,9 @@ def take_and_upload_screenshot(fb_url):
             headers={"Content-Type": "application/json"},
             method="PUT"
         )
-        urllib.request.urlopen(req, timeout=15)
-        log("Đã tải ảnh chụp màn hình lên Firebase!")
+        urllib.request.urlopen(req, timeout=10)
     except Exception as e:
-        log(f"Lỗi upload ảnh chụp màn hình: {e}")
+        log(f"Lỗi upload screenshot: {e}")
 
 # ==================== ĐỒNG BỘ FIREBASE ====================
 
@@ -318,33 +310,44 @@ def http_put(url, data):
     except Exception:
         return False
 
-# ==================== QUY TRÌNH NẠP & XÁC MINH 2 LẦN ====================
+# ==================== QUY TRÌNH NẠP & BÁO CÁO TIẾN ĐỘ ====================
+
+def report_progress(fb_url, step, total, msg):
+    http_put(f"{fb_url}/login_progress.json", {
+        "step": step,
+        "total": total,
+        "msg": msg,
+        "timestamp": int(time.time() * 1000)
+    })
 
 def process_login_all(acc_list, tabs, place_id, job_id, fb_url):
     results = []
-    log(f"--- BẮT ĐẦU NẠP VÀ KIỂM TRA LẦN LƯỢT {len(acc_list)} ACC ---")
-    for i, acc in enumerate(acc_list[:len(tabs)]):
+    total = min(len(acc_list), len(tabs))
+    log(f"--- BẮT ĐẦU NẠP VÀ KIỂM TRA LẦN LƯỢT {total} ACC ---")
+
+    for i in range(total):
+        acc = acc_list[i]
         tab_name = tabs[i].get("name")
         pkg = tabs[i].get("package")
         cookie = acc.get("cookie")
         user = acc.get("user")
 
+        report_progress(fb_url, i + 1, total, f"Đang nạp {tab_name} ({user})...")
         log(f"\n[+] Xử lý {tab_name} ({pkg}) cho user: {user}...")
 
-        # BƯỚC 1: Kiểm tra tính hợp lệ của Cookie trên máy chủ Roblox
+        # 1. Xác thực cookie qua Roblox API
         roblox_info = verify_cookie_with_roblox(cookie)
-
         inject_ok = False
         sqlite_verified = False
 
         if roblox_info["valid"]:
-            # BƯỚC 2: Nạp vào SQLite + BƯỚC 3: Đọc lại SQLite để kiểm tra lần 2
+            # 2. Nạp cookie vào SQLite
             inject_ok, sqlite_verified = inject_cookie_to_pkg(pkg, cookie)
             if inject_ok:
                 launch_game(pkg, place_id, job_id)
-                time.sleep(2)
+                time.sleep(1)
         else:
-            log(f"[X] Cookie của {user} không hợp lệ, bỏ qua nạp.")
+            log(f"[X] Cookie của {user} không hợp lệ!")
 
         status = "Thành công" if (roblox_info["valid"] and inject_ok and sqlite_verified) else "Thất bại"
         results.append({
@@ -361,7 +364,12 @@ def process_login_all(acc_list, tabs, place_id, job_id, fb_url):
             "status": status
         })
 
-    # Đẩy báo cáo chi tiết lên Firebase để Web hiển thị
+    # Căn lại 2x2 tự động sau khi nạp xong cả 4 tab
+    report_progress(fb_url, total, total, "Đang căn lại cửa sổ 2x2...")
+    time.sleep(1)
+    arrange_2x2(tabs)
+
+    # Đẩy báo cáo tổng kết
     report_payload = {
         "timestamp": int(time.time() * 1000),
         "updated_at": datetime.now().strftime("%H:%M:%S"),
@@ -370,7 +378,8 @@ def process_login_all(acc_list, tabs, place_id, job_id, fb_url):
         "results": results
     }
     http_put(f"{fb_url}/login_result.json", report_payload)
-    log(f"\n--- ĐÃ HOÀN TẤT NẠP COOKIE: {report_payload['success_count']}/{report_payload['total_count']} THÀNH CÔNG ---")
+    report_progress(fb_url, total, total, "Hoàn tất!")
+    log(f"\n--- ĐÃ HOÀN TẤT: {report_payload['success_count']}/{report_payload['total_count']} THÀNH CÔNG ---")
 
 def process_login_tab(target_pkg, tabs, accounts, place_id, job_id, fb_url):
     tab_idx = 0
@@ -385,7 +394,7 @@ def process_login_tab(target_pkg, tabs, accounts, place_id, job_id, fb_url):
         acc = accounts[tab_idx]
         user = acc.get("user")
         cookie = acc.get("cookie")
-        log(f"\n[+] Nạp riêng {tab_name} ({target_pkg}) cho {user}...")
+        report_progress(fb_url, 1, 1, f"Đang nạp riêng {tab_name} ({user})...")
 
         roblox_info = verify_cookie_with_roblox(cookie)
         inject_ok, sqlite_verified = False, False
@@ -415,6 +424,7 @@ def process_login_tab(target_pkg, tabs, accounts, place_id, job_id, fb_url):
             }]
         }
         http_put(f"{fb_url}/login_result.json", report_payload)
+        report_progress(fb_url, 1, 1, "Hoàn tất!")
 
 def main():
     print("=" * 55)
@@ -437,23 +447,24 @@ def main():
             now = time.time()
             accounts = parse_accounts()
 
-            # 1. Cập nhật Status lên Firebase mỗi 6 giây
-            if now - last_status_update >= 6:
-                tabs_status = {}
+            # 1. Cập nhật Status dạng Array (Tránh lỗi 400 Bad Request của Firebase do có dấu chấm)
+            if now - last_status_update >= 5:
+                tabs_list = []
                 for i, tab in enumerate(tabs):
                     pkg = tab.get("package")
                     acc_user = accounts[i].get("user") if i < len(accounts) else ""
-                    tabs_status[pkg] = {
+                    tabs_list.append({
+                        "package": pkg,
                         "name": tab.get("name"),
                         "is_running": is_running(pkg),
                         "place_id": place_id,
                         "account_user": acc_user
-                    }
+                    })
                 
                 status_payload = {
                     "last_seen": datetime.now().strftime("%H:%M:%S"),
                     "last_seen_epoch": int(now),
-                    "tabs": tabs_status
+                    "tabs": tabs_list
                 }
                 http_put(f"{fb_url}/status.json", status_payload)
                 last_status_update = now
@@ -488,14 +499,16 @@ def main():
 
                     elif action == "rejoin":
                         kill_app(target_pkg)
+                        time.sleep(1)
                         launch_game(target_pkg, place_id, job_id)
 
                     elif action == "rejoin_all":
                         for t in tabs:
                             p = t.get("package")
                             kill_app(p)
+                            time.sleep(0.5)
                             launch_game(p, place_id, job_id)
-                            time.sleep(2)
+                            time.sleep(1.5)
 
                     elif action == "tile":
                         arrange_2x2(tabs)
@@ -507,13 +520,13 @@ def main():
                         for t in tabs:
                             kill_app(t.get("package"))
 
-            time.sleep(2)
+            time.sleep(1.5)
 
         except KeyboardInterrupt:
             log("Dừng Agent.")
             break
         except Exception as e:
-            time.sleep(3)
+            time.sleep(2)
 
 if __name__ == "__main__":
     main()

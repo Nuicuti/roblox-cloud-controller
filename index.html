@@ -49,7 +49,7 @@
         .btn-orange { background: linear-gradient(135deg, #ea580c, #f97316); color: white; box-shadow: 0 4px 14px rgba(234, 88, 12, 0.3); }
         .btn-red { background: linear-gradient(135deg, #b91c1c, #dc2626); color: white; }
         .btn-outline { background: #1e293b; color: var(--text-main); border: 1px solid var(--border); }
-        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn:disabled { opacity: 0.7; cursor: not-allowed; }
 
         /* Card common */
         .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px; padding: 18px; margin-bottom: 20px; }
@@ -61,8 +61,8 @@
         .cookie-hint { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 10px; }
 
         /* Result Modal/Box */
-        .result-box { display: none; background: rgba(16, 185, 129, 0.1); border: 1px solid #10b981; border-radius: 12px; padding: 16px; margin-bottom: 20px; animation: fadeIn 0.3s ease; }
-        .result-box.error { background: rgba(239, 68, 68, 0.1); border-color: #ef4444; }
+        .result-box { display: none; background: rgba(16, 185, 129, 0.12); border: 1px solid #10b981; border-radius: 12px; padding: 16px; margin-bottom: 20px; animation: fadeIn 0.3s ease; }
+        .result-box.error { background: rgba(239, 68, 68, 0.12); border-color: #ef4444; }
         .result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-weight: 700; font-size: 1rem; }
         .result-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 8px; }
         .result-table th, .result-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
@@ -199,6 +199,7 @@
         document.getElementById('firebaseUrlInput').value = firebaseUrl;
         let lastLoginResultTime = 0;
         let pendingLoginReqTime = 0;
+        let loginTimeoutTimer = null;
 
         function addLog(msg) {
             const box = document.getElementById('logBox');
@@ -260,28 +261,38 @@
             summary += `\n❓ Bạn có chắc chắn muốn nạp Cookie và tự động khởi động các clone?`;
 
             if (!confirm(summary)) {
-                return; // Người dùng bấm Hủy
+                return;
             }
 
-            // Người dùng Xác nhận -> Bắt đầu nạp
             const btn = document.getElementById('btnLoginAll');
             btn.disabled = true;
-            btn.innerHTML = '<span>⏳</span> Đang nạp cookie & kiểm tra xác minh...';
+            btn.innerHTML = '<span>⏳</span> Đang nạp cookie & kiểm tra...';
 
             saveAccounts();
             pendingLoginReqTime = Date.now();
             sendCommand('login_all', '', { accounts_text: text, req_time: pendingLoginReqTime });
-            addLog('⚡ Lệnh nạp cookie vào các clone đã gửi đi. Đang chờ máy ảo xác minh...');
+            addLog('⚡ Lệnh nạp cookie vào các clone đã gửi đi. Đang chờ máy ảo xử lý...');
+
+            // Tự động mở lại nút sau 40s nếu mạng lag
+            clearTimeout(loginTimeoutTimer);
+            loginTimeoutTimer = setTimeout(() => {
+                resetLoginButton();
+            }, 40000);
         }
 
-        // 2. XÁC NHẬN NẠP COOKIE CHO 1 TAB
         function confirmAndLoginTab(pkg) {
             if (!confirm(`❓ Bạn có chắc muốn nạp Cookie và mở lại cho riêng Tab [${pkg}]?`)) {
                 return;
             }
             pendingLoginReqTime = Date.now();
             sendCommand('login_tab', pkg, { req_time: pendingLoginReqTime });
-            addLog(`⚡ Lệnh nạp cookie cho ${pkg} đã gửi đi. Đang chờ xác minh...`);
+            addLog(`⚡ Lệnh nạp cookie cho ${pkg} đã gửi đi. Đang xử lý...`);
+        }
+
+        function resetLoginButton() {
+            const btn = document.getElementById('btnLoginAll');
+            btn.disabled = false;
+            btn.innerHTML = '<span>⚡</span> Nạp Cookie & Đăng Nhập Cả 4 Clone';
         }
 
         // Gửi lệnh lên Firebase
@@ -306,6 +317,9 @@
 
         // Hiển thị Banner kết quả xác minh
         function showVerificationResults(data) {
+            clearTimeout(loginTimeoutTimer);
+            resetLoginButton();
+
             const banner = document.getElementById('resultBanner');
             const title = document.getElementById('resultBannerTitle');
             const content = document.getElementById('resultBannerContent');
@@ -350,11 +364,6 @@
             banner.style.display = 'block';
 
             addLog(`✅ Báo cáo nạp cookie: ${data.success_count}/${data.total_count} tài khoản thành công!`);
-
-            // Mở lại nút nạp
-            const btn = document.getElementById('btnLoginAll');
-            btn.disabled = false;
-            btn.innerHTML = '<span>⚡</span> Nạp Cookie & Đăng Nhập Cả 4 Clone';
         }
 
         // Lấy trạng thái từ Firebase
@@ -369,7 +378,7 @@
                 
                 const nowSec = Math.floor(Date.now() / 1000);
                 const lastSeenSec = data.last_seen_epoch || 0;
-                const isOnline = (nowSec - lastSeenSec) < 30;
+                const isOnline = (nowSec - lastSeenSec) < 25;
 
                 const dot = document.getElementById('statusDot');
                 const txt = document.getElementById('statusText');
@@ -385,10 +394,12 @@
 
                 document.getElementById('lastCheckTime').innerText = 'Cập nhật: ' + (data.last_seen || 'Chưa rõ');
 
-                // Render 4 Tab
+                // Render 4 Tab (Hỗ trợ cả dạng Array lẫn Object)
                 if (data.tabs) {
                     let html = '';
-                    for (const [pkg, info] of Object.entries(data.tabs)) {
+                    const tabsList = Array.isArray(data.tabs) ? data.tabs : Object.values(data.tabs);
+                    tabsList.forEach(info => {
+                        const pkg = info.package;
                         const isLive = info.is_running;
                         const accName = info.account_user ? ` (User: ${info.account_user})` : '';
                         html += `
@@ -403,13 +414,26 @@
                                 <button class="btn btn-orange" style="padding: 6px 10px; font-size: 0.8rem;" onclick="confirmAndLoginTab('${pkg}')">🔑 Nạp Cookie</button>
                             </div>
                         </div>`;
-                    }
+                    });
                     document.getElementById('tabsList').innerHTML = html;
                 }
             })
             .catch(err => {});
 
-            // 2. Đọc Kết Quả Nạp Cookie (login_result.json)
+            // 2. Theo dõi tiến độ nạp (login_progress.json)
+            fetch(`${firebaseUrl}/login_progress.json`)
+            .then(r => r.json())
+            .then(prog => {
+                if (prog && prog.msg && (Date.now() - prog.timestamp < 15000)) {
+                    const btn = document.getElementById('btnLoginAll');
+                    if (btn.disabled) {
+                        btn.innerHTML = `<span>⏳</span> [${prog.step}/${prog.total}] ${prog.msg}`;
+                    }
+                }
+            })
+            .catch(err => {});
+
+            // 3. Đọc Kết Quả Nạp Cookie (login_result.json)
             fetch(`${firebaseUrl}/login_result.json`)
             .then(r => r.json())
             .then(data => {
@@ -422,7 +446,7 @@
             })
             .catch(err => {});
 
-            // 3. Đọc Screenshot
+            // 4. Đọc Screenshot
             fetch(`${firebaseUrl}/screenshot.json`)
             .then(r => r.json())
             .then(data => {
@@ -453,7 +477,7 @@
             .catch(err => {});
         }
 
-        setInterval(refreshData, 3000);
+        setInterval(refreshData, 2500);
         if (firebaseUrl) {
             refreshData();
             loadStoredAccounts();
