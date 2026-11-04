@@ -2,10 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 Agent chạy trên Android (Termux Root)
-- Lưu trữ toàn bộ dữ liệu tại: /storage/emulated/0/
-- Hỗ trợ Nạp Cookie (SQLite Injection) theo định dạng tk:mk:cookie
-- Tự động kiểm tra xác minh 2 lần (Xác minh Roblox API + Kiểm tra SQLite readback)
-- Báo cáo tiến độ thời gian thực (Realtime Progress) lên Firebase
+- Tự động quét và nhận diện các bản Clone Noka cài trên máy
+- Nạp Cookie chuẩn SQLite (Checkpoint & dọn dẹp WAL để app nhận phiên 100%)
+- Kết nối đồng bộ hai chiều với Web Controller trên Vercel qua Firebase
 """
 
 import os
@@ -40,21 +39,9 @@ DEFAULT_CONFIG = {
 
 def log(msg):
     now = datetime.now().strftime("%H:%M:%S")
-    print(f"[{now}] {msg}")
-
-def load_config():
-    if not os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                json.dump(DEFAULT_CONFIG, f, indent=4)
-        except Exception:
-            pass
-        return DEFAULT_CONFIG
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return DEFAULT_CONFIG
+    entry = f"[{now}] {msg}"
+    print(entry)
+    sys.stdout.flush()
 
 def run_cmd(cmd):
     """Chạy lệnh shell bằng quyền root"""
@@ -70,10 +57,44 @@ def run_cmd(cmd):
     except Exception:
         return ""
 
+def auto_detect_noka_packages():
+    """Tự động dò tìm tất cả các package Noka / Roblox clone đang cài trên máy"""
+    out = run_cmd("pm list packages | grep -iE 'noka|roblox'")
+    pkgs = []
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("package:"):
+            p = line.replace("package:", "").strip()
+            if p and p not in pkgs:
+                pkgs.append(p)
+    return pkgs
+
+def load_config():
+    cfg = DEFAULT_CONFIG
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception:
+            cfg = DEFAULT_CONFIG
+
+    # Tự động đồng bộ với các package clone thực tế trên máy
+    installed = auto_detect_noka_packages()
+    if installed:
+        log(f"[*] Tìm thấy các bản clone trên máy: {installed}")
+        # Cập nhật danh sách tabs theo package thực tế
+        new_tabs = []
+        for i, p in enumerate(installed[:4]):
+            new_tabs.append({"name": f"Noka {i+1}", "package": p})
+        if new_tabs:
+            cfg["tabs"] = new_tabs
+
+    return cfg
+
 # ==================== KIỂM TRA & XÁC MINH COOKIE ====================
 
 def verify_cookie_with_roblox(cookie):
-    """Kiểm tra lần 1: Xác minh cookie có sống và lấy info từ Roblox API"""
+    """Xác minh cookie sống với Roblox API"""
     try:
         url = "https://users.roblox.com/v1/users/authenticated"
         cookie_header = f".ROBLOSECURITY={cookie}" if not cookie.startswith(".ROBLOSECURITY=") else cookie
@@ -112,9 +133,14 @@ def init_app_webview(pkg):
         time.sleep(1)
 
 def inject_cookie_to_pkg(pkg, cookie_val):
-    """Nạp trực tiếp .ROBLOSECURITY vào Chromium SQLite Cookies của app (CỰC NHANH)"""
+    """
+    Nạp trực tiếp .ROBLOSECURITY vào Chromium SQLite Cookies
+    Xử lý WAL Checkpoint & xóa -wal/-shm để app buộc phải nhận phiên đăng nhập mới
+    """
     log(f"Đang nạp Cookie vào {pkg}...")
+    # 1. Tắt hoàn toàn app trước khi sửa database
     run_cmd(f"am force-stop {pkg}")
+    time.sleep(0.5)
 
     cookie_path = f"/data/data/{pkg}/app_webview/Default/Cookies"
     if not os.path.exists(cookie_path):
@@ -137,66 +163,78 @@ def inject_cookie_to_pkg(pkg, cookie_val):
             conn.close()
             return False, False
 
-        cur.execute("SELECT rowid FROM cookies WHERE host_key = '.roblox.com' AND name = '.ROBLOSECURITY'")
-        row = cur.fetchone()
+        # Xóa sạch cookie cũ của .roblox.com để tránh xung đột phiên cũ
+        cur.execute("DELETE FROM cookies WHERE host_key LIKE '%.roblox.com%'")
+
         now_utc = int(time.time() * 1000000) + 11644473600000000
 
-        if row:
-            cur.execute("UPDATE cookies SET value = ?, last_access_utc = ? WHERE rowid = ?", (cookie_val, now_utc, row[0]))
-        else:
-            cur.execute("PRAGMA table_info(cookies)")
-            cols = [c[1] for c in cur.fetchall()]
-            val_map = {
-                'creation_utc': now_utc,
-                'host_key': '.roblox.com',
-                'top_frame_site_key': '',
-                'name': '.ROBLOSECURITY',
-                'value': cookie_val,
-                'encrypted_value': b'',
-                'path': '/',
-                'expires_utc': now_utc + 31536000000000,
-                'is_secure': 1,
-                'is_httponly': 1,
-                'last_access_utc': now_utc,
-                'has_expires': 1,
-                'is_persistent': 1,
-                'priority': 1,
-                'samesite': -1,
-                'source_scheme': 2,
-                'source_port': 443,
-                'is_same_party': 0,
-                'last_update_utc': now_utc
-            }
-            insert_cols = [c for c in cols if c in val_map]
-            placeholders = ', '.join(['?'] * len(insert_cols))
-            col_names = ', '.join(insert_cols)
-            values = [val_map[c] for c in insert_cols]
-            sql = f"INSERT INTO cookies ({col_names}) VALUES ({placeholders})"
-            cur.execute(sql, values)
+        cur.execute("PRAGMA table_info(cookies)")
+        cols = [c[1] for c in cur.fetchall()]
+        val_map = {
+            'creation_utc': now_utc,
+            'host_key': '.roblox.com',
+            'top_frame_site_key': '',
+            'name': '.ROBLOSECURITY',
+            'value': cookie_val,
+            'encrypted_value': b'',
+            'path': '/',
+            'expires_utc': now_utc + 31536000000000,
+            'is_secure': 1,
+            'is_httponly': 1,
+            'last_access_utc': now_utc,
+            'has_expires': 1,
+            'is_persistent': 1,
+            'priority': 1,
+            'samesite': -1,
+            'source_scheme': 2,
+            'source_port': 443,
+            'is_same_party': 0,
+            'last_update_utc': now_utc
+        }
+        insert_cols = [c for c in cols if c in val_map]
+        placeholders = ', '.join(['?'] * len(insert_cols))
+        col_names = ', '.join(insert_cols)
+        values = [val_map[c] for c in insert_cols]
+        sql = f"INSERT INTO cookies ({col_names}) VALUES ({placeholders})"
+        cur.execute(sql, values)
 
         conn.commit()
 
-        # Kiểm tra lần 2: Đọc lại SQLite
+        # Checkpoint WAL sang file Cookies chính và chuyển sang DELETE mode
+        try:
+            cur.execute("PRAGMA wal_checkpoint(FULL);")
+            cur.execute("PRAGMA journal_mode=DELETE;")
+        except Exception:
+            pass
+
+        # Kiểm tra lần 2: Đọc lại SQLite xem đã có cookie chưa
         cur.execute("SELECT value FROM cookies WHERE host_key = '.roblox.com' AND name = '.ROBLOSECURITY'")
         readback_row = cur.fetchone()
         sqlite_verified = bool(readback_row and readback_row[0] == cookie_val)
         conn.close()
 
-        # Cấp lại quyền cho app đọc file SQLite
-        for ext in ['', '-journal', '-wal', '-shm']:
+        # QUAN TRỌNG: Xóa sạch file WAL và SHM cũ để app không bị đọc dữ liệu đệm cũ
+        for ext in ['-wal', '-shm', '-journal']:
             f = cookie_path + ext
             if os.path.exists(f):
-                os.chown(f, uid, gid)
-                os.chmod(f, 0o660)
+                try: os.remove(f)
+                except Exception: pass
 
-        log(f"[✓] Đã nạp Cookie vào {pkg}! (SQLite Readback: {'KHỚP 100%' if sqlite_verified else 'Lỗi'})")
+        # Cấp quyền cho app đọc file SQLite
+        if os.path.exists(cookie_path):
+            os.chown(cookie_path, uid, gid)
+            os.chmod(cookie_path, 0o660)
+
+        # Xóa cache login cũ của Roblox để app làm mới session
+        run_cmd(f"rm -rf /data/data/{pkg}/shared_prefs/RBX_LOGIN*")
+
+        log(f"[✓] Đã nạp Cookie vào {pkg}! (Xác minh SQLite: {'KHỚP 100%' if sqlite_verified else 'Lỗi'})")
         return True, sqlite_verified
     except Exception as e:
         log(f"[X] Lỗi khi inject cookie vào {pkg}: {e}")
         return False, False
 
 def parse_accounts(text_or_file=""):
-    """Phân tích danh sách tài khoản theo định dạng tk:mk:cookie"""
     lines = []
     if text_or_file and ":" in text_or_file:
         lines = text_or_file.strip().splitlines()
@@ -231,10 +269,15 @@ def kill_app(pkg):
 
 def launch_game(pkg, place_id, job_id=""):
     log(f"Khởi chạy {pkg} vào Place {place_id}...")
+    run_cmd(f"am force-stop {pkg}")
+    time.sleep(0.5)
+
     if job_id:
         uri = f"roblox://placeId={place_id}&gameInstanceId={job_id}"
     else:
         uri = f"roblox://experiences/start?placeId={place_id}"
+
+    # Khởi chạy bằng intent VIEW deep link
     run_cmd(f"am start -a android.intent.action.VIEW -d \"{uri}\" -p {pkg}")
 
 def arrange_2x2(tabs):
@@ -310,7 +353,7 @@ def http_put(url, data):
     except Exception:
         return False
 
-# ==================== QUY TRÌNH NẠP & BÁO CÁO TIẾN ĐỘ ====================
+# ==================== QUY TRÌNH NẠP & TIẾN ĐỘ ====================
 
 def report_progress(fb_url, step, total, msg):
     http_put(f"{fb_url}/login_progress.json", {
@@ -335,13 +378,11 @@ def process_login_all(acc_list, tabs, place_id, job_id, fb_url):
         report_progress(fb_url, i + 1, total, f"Đang nạp {tab_name} ({user})...")
         log(f"\n[+] Xử lý {tab_name} ({pkg}) cho user: {user}...")
 
-        # 1. Xác thực cookie qua Roblox API
         roblox_info = verify_cookie_with_roblox(cookie)
         inject_ok = False
         sqlite_verified = False
 
         if roblox_info["valid"]:
-            # 2. Nạp cookie vào SQLite
             inject_ok, sqlite_verified = inject_cookie_to_pkg(pkg, cookie)
             if inject_ok:
                 launch_game(pkg, place_id, job_id)
@@ -364,12 +405,10 @@ def process_login_all(acc_list, tabs, place_id, job_id, fb_url):
             "status": status
         })
 
-    # Căn lại 2x2 tự động sau khi nạp xong cả 4 tab
     report_progress(fb_url, total, total, "Đang căn lại cửa sổ 2x2...")
     time.sleep(1)
     arrange_2x2(tabs)
 
-    # Đẩy báo cáo tổng kết
     report_payload = {
         "timestamp": int(time.time() * 1000),
         "updated_at": datetime.now().strftime("%H:%M:%S"),
