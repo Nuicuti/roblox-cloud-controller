@@ -82,7 +82,25 @@ class Tests(unittest.TestCase):
     def test_explicit_close_disables_reopen(self):
         self.manager.execute({'action':'close','package':'free.nokaA'})
         self.assertFalse(self.manager.profile('free.nokaA')['enabled'])
+        self.assertFalse(self.manager.profile('free.nokaA')['autoReopen'])
         self.assertEqual(self.android.closed,['free.nokaA'])
+    def test_auto_reopen_per_noka_can_be_disabled_independently(self):
+        for package,p in self.manager.state['profiles'].items(): p['enabled']=package=='free.nokaA'
+        self.manager.state['watch']=True
+        profile=self.manager.state['profiles']['free.nokaA']
+        profile['autoReopen']=False
+        self.manager.watchdog(100)
+        self.manager.watchdog(103)
+        self.assertEqual(self.android.opened,[])
+        profile['autoReopen']=True
+        self.manager.watchdog(106)
+        self.manager.watchdog(109)
+        self.assertEqual(self.android.opened,['free.nokaA'])
+    def test_profile_command_accepts_auto_reopen_flag(self):
+        item=dict(self.manager.profile('free.nokaA'))
+        item['autoReopen']=False
+        self.manager.execute({'action':'profile','profile':item})
+        self.assertFalse(self.manager.profile('free.nokaA')['autoReopen'])
     def test_slot_change_swaps_windows_without_changing_accounts(self):
         item=dict(self.manager.profile('free.nokaA'))
         item['slot']=1

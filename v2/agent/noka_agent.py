@@ -208,9 +208,14 @@ class Android:
             time.sleep(.5)
         else:
             raise AgentError('Chưa tìm thấy cửa sổ đang hoạt động của '+package)
-        root_command(['/system/bin/am', 'task', 'resize', str(task), *map(str, bounds)])
+        root_command(['/system/bin/am', 'task', 'resize', str(task), *map(str, bounds)], check=False)
         time.sleep(.6)
         actual, freeform = task_bounds(self.tasks(), task)
+        if not freeform or actual is None or max(abs(a-b) for a, b in zip(actual, bounds)) > 24:
+            comma_bounds = ','.join(map(str, bounds))
+            root_command(['/system/bin/am', 'task', 'resize', str(task), comma_bounds], check=False)
+            time.sleep(.6)
+            actual, freeform = task_bounds(self.tasks(), task)
         if not freeform or actual is None:
             raise AgentError('Android chưa xác nhận cửa sổ freeform; cần kiểm tra hỗ trợ đa cửa sổ trên máy.')
         if max(abs(a-b) for a, b in zip(actual, bounds)) > 24:
@@ -264,7 +269,9 @@ class Manager:
             occupied.add(slot)
             suffix = package.removeprefix('free.noka')
             label = 'Noka '+str(ord(suffix)-64) if len(suffix) == 1 and 'A' <= suffix <= 'Z' else package
-            profiles[package] = {'package': package, 'label': label, 'username': '', 'slot': slot, 'enabled': True}
+            profiles[package] = {'package': package, 'label': label, 'username': '', 'slot': slot, 'enabled': True, 'autoReopen': True}
+        for p in profiles.values():
+            p.setdefault('autoReopen', True)
         self.save()
         return f'Phát hiện {len(installed)} bản Noka. Cấu hình cũ được giữ nguyên.'
 
@@ -356,8 +363,11 @@ class Manager:
         if action == 'profile':
             item = command['profile']
             self.profile(item['package'])
-            if set(item) != {'package', 'label', 'username', 'slot', 'enabled'} or type(item['slot']) is not int or not 1 <= item['slot'] <= 36 or type(item['enabled']) is not bool:
+            valid_keys = {'package', 'label', 'username', 'slot', 'enabled', 'autoReopen'}
+            if not set(item).issubset(valid_keys) or not {'package', 'label', 'username', 'slot', 'enabled'}.issubset(item) or type(item['slot']) is not int or not 1 <= item['slot'] <= 36 or type(item['enabled']) is not bool:
                 raise AgentError('Thông tin tài khoản không hợp lệ.')
+            if 'autoReopen' in item and type(item['autoReopen']) is not bool:
+                raise AgentError('Cài đặt tự mở lại không hợp lệ.')
             previous_slot = self.state['profiles'][item['package']]['slot']
             for other in self.state['profiles'].values():
                 if other['package'] != item['package'] and other['slot'] == item['slot']:
@@ -375,10 +385,14 @@ class Manager:
         if action == 'close':
             profile = self.profile(command['package'])
             profile['enabled'] = False
+            profile['autoReopen'] = False
             self.save()
             self.android.close(profile['package'])
             return 'Đã đóng Noka và tạm dừng tự mở lại cho bản này.'
         if action == 'open':
+            profile = self.profile(command['package'])
+            profile['enabled'] = True
+            profile['autoReopen'] = True
             self.open_profile(command['package'])
             return 'Đã mở Noka.'
         if action == 'open_all':
@@ -420,8 +434,16 @@ class Manager:
                     continue
                 try:
                     message = login_account(account, root_command)
+                    profile['cookieStatus'] = 'valid'
+                    profile['sqliteStatus'] = 'written'
+                    profile['appStatus'] = 'running'
+                    profile['loginStatus'] = 'unverified_ingame'
                 except AgentError as error:
                     message = str(error)
+                    if 'Roblox không chấp nhận cookie' in message:
+                        profile['cookieStatus'] = 'invalid'
+                    elif 'kho cookie' in message or 'ghi cookie' in message:
+                        profile['sqliteStatus'] = 'failed'
                     failed = True
                 profile['loginMessage'] = message
                 messages.append(profile['label']+': '+message)
@@ -442,7 +464,7 @@ class Manager:
             return
         now = time.monotonic() if now is None else now
         for package, profile in self.state['profiles'].items():
-            if not profile['enabled']:
+            if not profile.get('enabled', True) or not profile.get('autoReopen', True):
                 continue
             health = self.health.setdefault(package, {'missing': 0, 'next': 0, 'attempts': deque(), 'healthy': None})
             if self.android.running(package):
@@ -478,7 +500,9 @@ class Manager:
         profiles = {}
         tasks = parse_tasks(self.android.tasks())
         for package, profile in self.state['profiles'].items():
-            item = dict(profile, running=self.android.running(package), hasAccount=package in self.accounts)
+            is_running = self.android.running(package)
+            item = dict(profile, running=is_running, hasAccount=package in self.accounts)
+            item['appStatus'] = 'running' if is_running else 'stopped'
             if package in tasks:
                 item['taskId'] = tasks[package]
             # RTDB keys cannot contain periods; the package stays as a string field.

@@ -9,6 +9,7 @@ export const profileSchema = z.object({
   username: z.string().trim().max(80),
   slot: z.number().int().min(1).max(36),
   enabled: z.boolean(),
+  autoReopen: z.boolean().optional(),
 }).strict();
 export const commandSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("scan") }).strict(),
@@ -31,7 +32,17 @@ export const commandSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("login_all") }).strict(),
 ]);
 export type Command = z.infer<typeof commandSchema>;
-export type Profile = z.infer<typeof profileSchema> & { running?: boolean; error?: string; taskId?: number; hasAccount?: boolean; loginMessage?: string };
+export type Profile = z.infer<typeof profileSchema> & {
+  running?: boolean;
+  error?: string;
+  taskId?: number;
+  hasAccount?: boolean;
+  loginMessage?: string;
+  cookieStatus?: "valid" | "invalid" | "unverified";
+  sqliteStatus?: "written" | "failed" | "none";
+  appStatus?: "running" | "stopped";
+  loginStatus?: "unverified_ingame" | "logged_in";
+};
 export type Result = { id: string; action: string; status: "queued" | "running" | "succeeded" | "failed";
   createdAt: number; finishedAt?: number; message?: string };
 export type Device = { id: string; meta: { name: string; ownerUid: string }; telemetry?: {
