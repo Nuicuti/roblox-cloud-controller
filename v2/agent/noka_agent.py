@@ -543,12 +543,16 @@ def process_command(firebase, manager, command, journal):
     firebase.device('results/'+identifier, 'PUT', result)
     firebase.device('inbox/'+identifier, 'DELETE')
 
-def setup():
+def setup(api_key=None, database=None):
     PRIVATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(PRIVATE, 0o700)
     config = read_json(PRIVATE/'config.json', {})
-    api_key = input('Firebase Web API key: ').strip()
-    database = input('Realtime Database URL: ').strip().rstrip('/')
+    if not api_key:
+        api_key = input('Firebase Web API key: ').strip()
+    if not database:
+        database = input('Realtime Database URL: ').strip().rstrip('/')
+    else:
+        database = database.strip().rstrip('/')
     parsed = urllib.parse.urlsplit(database)
     if parsed.scheme != 'https' or not parsed.hostname or not parsed.hostname.endswith(('.firebaseio.com', '.firebasedatabase.app')) or parsed.path or parsed.query or parsed.fragment:
         raise AgentError('URL database không hợp lệ.')
@@ -560,14 +564,20 @@ def setup():
     firebase = Firebase()
     firebase.authenticate()
     if firebase.device('meta'):
-        print('Máy đã ghép. UID:', firebase.uid)
+        print('\n[i] Máy đã ghép trước đó trên Dashboard. UID:', firebase.uid)
         return
     code = secrets.token_hex(16)
     firebase.request('pairingCodes/'+code, 'PUT', {'deviceUid': firebase.uid,
                                                 'expiresAt': int(time.time()*1000)+600_000})
-    print('UID máy:', firebase.uid)
-    print('Mã ghép (10 phút):', code)
-    print('Nhập hai thông tin trên trong dashboard. Không chia sẻ mã ghép.')
+    print('\n==========================================')
+    print(' [✓] KHỞI TẠO ĐỊNH DANH MÁY THÀNH CÔNG!')
+    print('==========================================')
+    print('UID máy           :', firebase.uid)
+    print('Mã ghép (10 phút) :', code)
+    print('==========================================')
+    print('👉 Mở Dashboard: https://roblox-cloud-controller.vercel.app')
+    print('👉 Bấm "Ghép máy mới" và dán UID + Mã ghép ở trên.')
+    print('==========================================\n')
 
 def run():
     import fcntl
@@ -637,10 +647,12 @@ def run():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('action', choices=('setup', 'run'))
+    parser.add_argument('--api-key', dest='api_key', default=None)
+    parser.add_argument('--database', dest='database', default=None)
     args = parser.parse_args()
     try:
         if args.action == 'setup':
-            setup()
+            setup(args.api_key, args.database)
         else:
             run()
     except (AgentError, ImportError, KeyboardInterrupt) as error:
