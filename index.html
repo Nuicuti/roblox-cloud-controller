@@ -15,6 +15,7 @@
             --danger: #ef4444;
             --warning: #f59e0b;
             --purple: #a855f7;
+            --orange: #f97316;
             --text-main: #f8fafc;
             --text-muted: #94a3b8;
             --border: #223052;
@@ -40,25 +41,34 @@
 
         /* Action Buttons */
         .actions-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
-        .btn { border: none; border-radius: 10px; padding: 14px; font-weight: 600; font-size: 0.95rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: all 0.2s ease; }
+        .btn { border: none; border-radius: 10px; padding: 13px; font-weight: 600; font-size: 0.92rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: all 0.2s ease; }
         .btn:active { transform: scale(0.98); }
         .btn-blue { background: linear-gradient(135deg, #0284c7, #2563eb); color: white; box-shadow: 0 4px 14px rgba(2, 132, 199, 0.3); }
         .btn-purple { background: linear-gradient(135deg, #7c3aed, #9333ea); color: white; box-shadow: 0 4px 14px rgba(124, 58, 237, 0.3); }
         .btn-green { background: linear-gradient(135deg, #059669, #10b981); color: white; box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3); }
+        .btn-orange { background: linear-gradient(135deg, #ea580c, #f97316); color: white; box-shadow: 0 4px 14px rgba(234, 88, 12, 0.3); }
         .btn-red { background: linear-gradient(135deg, #b91c1c, #dc2626); color: white; }
         .btn-outline { background: #1e293b; color: var(--text-main); border: 1px solid var(--border); }
 
-        /* Tabs Card */
+        /* Card common */
         .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px; padding: 18px; margin-bottom: 20px; }
         .card-title { font-size: 1.05rem; font-weight: 700; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
+
+        /* Cookie Manager */
+        .cookie-textarea { width: 100%; height: 110px; background: #080c14; border: 1px solid var(--border); border-radius: 8px; color: #e2e8f0; padding: 10px; font-family: monospace; font-size: 0.85rem; resize: vertical; outline: none; margin-bottom: 12px; }
+        .cookie-textarea:focus { border-color: var(--accent); }
+        .cookie-hint { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 10px; }
+
+        /* Tabs Card */
         .tabs-container { display: flex; flex-direction: column; gap: 10px; }
-        .tab-row { display: flex; justify-content: space-between; align-items: center; background: #0c1220; border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; }
+        .tab-row { display: flex; justify-content: space-between; align-items: center; background: #0c1220; border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; flex-wrap: wrap; gap: 10px; }
         .tab-info { display: flex; flex-direction: column; gap: 2px; }
         .tab-name { font-weight: 600; font-size: 0.95rem; color: #e2e8f0; }
         .tab-pkg { font-size: 0.8rem; color: var(--text-muted); font-family: monospace; }
         .tab-state { font-size: 0.8rem; padding: 4px 10px; border-radius: 6px; font-weight: bold; }
         .tab-online { background: rgba(16, 185, 129, 0.15); color: #34d399; }
         .tab-offline { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+        .tab-actions { display: flex; align-items: center; gap: 6px; }
 
         /* Screenshot Preview */
         .screen-container { width: 100%; border-radius: 10px; background: #000; border: 1px solid var(--border); overflow: hidden; min-height: 220px; display: flex; align-items: center; justify-content: center; position: relative; }
@@ -110,6 +120,26 @@
             </button>
         </div>
 
+        <!-- Cookie & Account Manager -->
+        <div class="card">
+            <div class="card-title">
+                <span>🔑 Quản Lý Cookie (Định dạng: tk:mk:cookie)</span>
+                <span style="font-size: 0.8rem; color: var(--orange);">📁 /storage/emulated/0/accounts.txt</span>
+            </div>
+            <div class="cookie-hint">
+                Dán danh sách tài khoản (mỗi acc 1 dòng dạng: <code>user:pass:_|WARNING:-DO-NOT-SHARE-THIS...</code>):
+            </div>
+            <textarea id="accountsTextarea" class="cookie-textarea" placeholder="acc1:pass1:_|WARNING:-DO-NOT-SHARE-THIS...&#10;acc2:pass2:_|WARNING:-DO-NOT-SHARE-THIS...&#10;acc3:pass3:_|WARNING:-DO-NOT-SHARE-THIS...&#10;acc4:pass4:_|WARNING:-DO-NOT-SHARE-THIS..."></textarea>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                <button class="btn btn-outline" style="flex: 1;" onclick="saveAccounts()">
+                    <span>💾</span> Lưu Danh Sách Acc
+                </button>
+                <button class="btn btn-orange" style="flex: 1.5;" onclick="loginAllCookies()">
+                    <span>⚡</span> Nạp Cookie & Đăng Nhập Cả 4 Clone
+                </button>
+            </div>
+        </div>
+
         <!-- Tab List Status -->
         <div class="card">
             <div class="card-title">
@@ -117,8 +147,7 @@
                 <span style="font-size: 0.8rem; font-weight: normal; color: var(--text-muted);" id="lastCheckTime">Cập nhật: Chưa rõ</span>
             </div>
             <div class="tabs-container" id="tabsList">
-                <!-- Render bằng Javascript -->
-                <div style="text-align: center; color: var(--text-muted); padding: 15px;">Chưa kết nối Firebase...</div>
+                <div style="text-align: center; color: var(--text-muted); padding: 15px;">Đang tải danh sách Tab...</div>
             </div>
         </div>
 
@@ -165,8 +194,40 @@
             refreshData();
         }
 
+        // Lưu danh sách tài khoản lên Firebase & sync vào máy ảo
+        function saveAccounts() {
+            const text = document.getElementById('accountsTextarea').value;
+            if (!firebaseUrl) { alert('Chưa cấu hình Firebase URL!'); return; }
+
+            addLog('Đang lưu danh sách tài khoản...');
+            fetch(`${firebaseUrl}/accounts.json`, {
+                method: 'PUT',
+                body: JSON.stringify({ raw_text: text, updated_at: Date.now() }),
+                headers: {'Content-Type': 'application/json'}
+            })
+            .then(res => {
+                if (res.ok) {
+                    addLog('Đã lưu danh sách tài khoản thành công!');
+                    sendCommand('sync_accounts', '', { accounts_text: text });
+                }
+            })
+            .catch(err => addLog('Lỗi lưu accounts: ' + err.message));
+        }
+
+        // Nạp cookie vào tất cả 4 clone
+        function loginAllCookies() {
+            const text = document.getElementById('accountsTextarea').value;
+            if (!text.trim()) {
+                alert('Vui lòng dán danh sách tài khoản tk:mk:cookie vào ô trên trước!');
+                return;
+            }
+            saveAccounts();
+            sendCommand('login_all', '', { accounts_text: text });
+            addLog('⚡ Lệnh nạp cookie vào 4 clone đã gửi đi!');
+        }
+
         // Gửi lệnh lên Firebase để điện thoại đọc
-        function sendCommand(action, pkg = '') {
+        function sendCommand(action, pkg = '', extra = {}) {
             if (!firebaseUrl) {
                 alert('Vui lòng nhập Firebase URL trước!');
                 return;
@@ -174,10 +235,11 @@
             const payload = {
                 action: action,
                 package: pkg,
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                ...extra
             };
 
-            addLog(`Gửi lệnh: ${action} ${pkg ? '(' + pkg + ')' : ''}...`);
+            addLog(`Gửi lệnh: [${action}] ${pkg ? '(' + pkg + ')' : ''}`);
 
             fetch(`${firebaseUrl}/command.json`, {
                 method: 'PUT',
@@ -185,8 +247,7 @@
                 headers: {'Content-Type': 'application/json'}
             })
             .then(res => {
-                if (res.ok) addLog(`Đã gửi lệnh [${action}] thành công!`);
-                else addLog(`Lỗi gửi lệnh: ${res.statusText}`);
+                if (res.ok) addLog(`Lệnh [${action}] đã được gửi tới máy ảo!`);
             })
             .catch(err => addLog(`Lỗi kết nối Firebase: ${err.message}`));
         }
@@ -201,7 +262,6 @@
             .then(data => {
                 if (!data) return;
                 
-                // Kiểm tra máy còn online không (dựa vào last_seen trong vòng 25s)
                 const nowSec = Math.floor(Date.now() / 1000);
                 const lastSeenSec = data.last_seen_epoch || 0;
                 const isOnline = (nowSec - lastSeenSec) < 30;
@@ -218,22 +278,24 @@
                     txt.style.color = '#f87171';
                 }
 
-                document.getElementById('lastCheckTime').innerText = 'Cập nhật: ' + (data.last_seen || 'Chưa có');
+                document.getElementById('lastCheckTime').innerText = 'Cập nhật: ' + (data.last_seen || 'Chưa rõ');
 
                 // Render 4 Tab
                 if (data.tabs) {
                     let html = '';
                     for (const [pkg, info] of Object.entries(data.tabs)) {
                         const isLive = info.is_running;
+                        const accName = info.account_user ? ` (User: ${info.account_user})` : '';
                         html += `
                         <div class="tab-row">
                             <div class="tab-info">
-                                <span class="tab-name">${info.name || pkg}</span>
-                                <span class="tab-pkg">${pkg} (Map: ${info.place_id || '1730877806'})</span>
+                                <span class="tab-name">${info.name || pkg}${accName}</span>
+                                <span class="tab-pkg">${pkg} (Place: ${info.place_id || '1730877806'})</span>
                             </div>
-                            <div style="display: flex; align-items: center; gap: 8px;">
+                            <div class="tab-actions">
                                 <span class="tab-state ${isLive ? 'tab-online' : 'tab-offline'}">${isLive ? 'ĐANG CHẠY' : 'ĐÃ TẮT'}</span>
                                 <button class="btn btn-outline" style="padding: 6px 12px; font-size: 0.8rem;" onclick="sendCommand('rejoin', '${pkg}')">Rejoin</button>
+                                <button class="btn btn-orange" style="padding: 6px 10px; font-size: 0.8rem;" onclick="sendCommand('login_tab', '${pkg}')">🔑 Nạp Cookie</button>
                             </div>
                         </div>`;
                     }
@@ -261,9 +323,24 @@
             .catch(err => {});
         }
 
-        // Tự động cập nhật mỗi 3 giây
+        // Load Accounts từ Firebase nếu có sẵn
+        function loadStoredAccounts() {
+            if (!firebaseUrl) return;
+            fetch(`${firebaseUrl}/accounts.json`)
+            .then(r => r.json())
+            .then(data => {
+                if (data && data.raw_text && !document.getElementById('accountsTextarea').value) {
+                    document.getElementById('accountsTextarea').value = data.raw_text;
+                }
+            })
+            .catch(err => {});
+        }
+
         setInterval(refreshData, 3000);
-        if (firebaseUrl) refreshData();
+        if (firebaseUrl) {
+            refreshData();
+            loadStoredAccounts();
+        }
     </script>
 </body>
 </html>

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Agent chạy trên Android (Termux Root) - Kết nối đồng bộ với Web Controller trên Vercel
+Agent chạy trên Android (Termux Root)
+- Lưu trữ toàn bộ dữ liệu tại: /storage/emulated/0/
+- Hỗ trợ Nạp Cookie (SQLite Injection) theo định dạng tk:mk:cookie
+- Kết nối đồng bộ hai chiều với Web Controller trên Vercel qua Firebase
 """
 
 import os
@@ -9,17 +12,20 @@ import sys
 import time
 import json
 import base64
+import sqlite3
 import subprocess
 import threading
 from datetime import datetime
 import urllib.request
 import urllib.error
 
-CONFIG_PATH = "/sdcard/Download/agent_config.json"
-SCREEN_RAW = "/sdcard/Download/screen_temp.png"
+# Toàn bộ file lưu trữ tại /storage/emulated/0/
+BASE_DIR = "/storage/emulated/0"
+CONFIG_PATH = f"{BASE_DIR}/agent_config.json"
+ACCOUNTS_FILE = f"{BASE_DIR}/accounts.txt"
+SCREEN_RAW = f"{BASE_DIR}/screen_temp.png"
 
 DEFAULT_CONFIG = {
-    # Dán URL Firebase Realtime Database của bạn vào đây
     "firebase_url": "https://roblox-cloud-farm-default-rtdb.firebaseio.com",
     "place_id": "1730877806",
     "job_id": "",
@@ -37,15 +43,16 @@ def log(msg):
 
 def load_config():
     if not os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(DEFAULT_CONFIG, f, indent=4)
-        log(f"Đã tạo file cấu hình mẫu tại: {CONFIG_PATH}")
+        try:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(DEFAULT_CONFIG, f, indent=4)
+        except Exception:
+            pass
         return DEFAULT_CONFIG
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception as e:
-        log(f"Lỗi đọc file cấu hình: {e}")
+    except Exception:
         return DEFAULT_CONFIG
 
 def run_cmd(cmd):
@@ -56,11 +63,141 @@ def run_cmd(cmd):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=10
+            timeout=12
         )
         return res.stdout.strip()
     except Exception:
         return ""
+
+# ==================== COOKIE INJECTION (SQLITE ENGINE) ====================
+
+def get_pkg_owner(pkg):
+    """Lấy UID và GID sở hữu thư mục app để gán lại quyền truy cập sau khi sửa SQLite"""
+    data_dir = f"/data/data/{pkg}"
+    if os.path.exists(data_dir):
+        st = os.stat(data_dir)
+        return st.st_uid, st.st_gid
+    return 10000, 10000
+
+def init_app_webview(pkg):
+    """Đảm bảo thư mục webview và Cookies DB đã được app tạo ra"""
+    cookie_path = f"/data/data/{pkg}/app_webview/Default/Cookies"
+    if not os.path.exists(cookie_path):
+        run_cmd(f"am start -n {pkg}/com.roblox.client.startup.LauncherAliasMain")
+        time.sleep(4)
+        run_cmd(f"am force-stop {pkg}")
+        time.sleep(1)
+
+def inject_cookie_to_pkg(pkg, cookie_val):
+    """Nạp trực tiếp .ROBLOSECURITY vào Chromium SQLite Cookies của app"""
+    log(f"Đang nạp Cookie vào {pkg}...")
+    run_cmd(f"am force-stop {pkg}")
+    time.sleep(1)
+    init_app_webview(pkg)
+
+    # Thử cả 2 đường dẫn phổ biến của WebView Cookies
+    paths_to_check = [
+        f"/data/data/{pkg}/app_webview/Default/Cookies",
+        f"/data/data/{pkg}/app_webview/Cookies"
+    ]
+    cookie_path = None
+    for p in paths_to_check:
+        if os.path.exists(p):
+            cookie_path = p
+            break
+
+    if not cookie_path:
+        log(f"[X] Không tìm thấy Cookies database của {pkg}!")
+        return False
+
+    try:
+        uid, gid = get_pkg_owner(pkg)
+        conn = sqlite3.connect(cookie_path)
+        cur = conn.cursor()
+
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cookies'")
+        if not cur.fetchone():
+            conn.close()
+            return False
+
+        cur.execute("SELECT rowid FROM cookies WHERE host_key = '.roblox.com' AND name = '.ROBLOSECURITY'")
+        row = cur.fetchone()
+        now_utc = int(time.time() * 1000000) + 11644473600000000
+
+        if row:
+            cur.execute("UPDATE cookies SET value = ?, last_access_utc = ? WHERE rowid = ?", (cookie_val, now_utc, row[0]))
+        else:
+            cur.execute("PRAGMA table_info(cookies)")
+            cols = [c[1] for c in cur.fetchall()]
+            val_map = {
+                'creation_utc': now_utc,
+                'host_key': '.roblox.com',
+                'top_frame_site_key': '',
+                'name': '.ROBLOSECURITY',
+                'value': cookie_val,
+                'encrypted_value': b'',
+                'path': '/',
+                'expires_utc': now_utc + 31536000000000,
+                'is_secure': 1,
+                'is_httponly': 1,
+                'last_access_utc': now_utc,
+                'has_expires': 1,
+                'is_persistent': 1,
+                'priority': 1,
+                'samesite': -1,
+                'source_scheme': 2,
+                'source_port': 443,
+                'is_same_party': 0,
+                'last_update_utc': now_utc
+            }
+            insert_cols = [c for c in cols if c in val_map]
+            placeholders = ', '.join(['?'] * len(insert_cols))
+            col_names = ', '.join(insert_cols)
+            values = [val_map[c] for c in insert_cols]
+            sql = f"INSERT INTO cookies ({col_names}) VALUES ({placeholders})"
+            cur.execute(sql, values)
+
+        conn.commit()
+        conn.close()
+
+        # Cấp lại quyền cho app đọc file SQLite
+        for ext in ['', '-journal', '-wal', '-shm']:
+            f = cookie_path + ext
+            if os.path.exists(f):
+                os.chown(f, uid, gid)
+                os.chmod(f, 0o660)
+
+        log(f"[✓] Đã nạp Cookie thành công vào {pkg}!")
+        return True
+    except Exception as e:
+        log(f"[X] Lỗi khi inject cookie vào {pkg}: {e}")
+        return False
+
+def parse_accounts(text_or_file=""):
+    """Phân tích danh sách tài khoản theo định dạng tk:mk:cookie"""
+    lines = []
+    if text_or_file and ":" in text_or_file:
+        lines = text_or_file.strip().splitlines()
+    elif os.path.exists(ACCOUNTS_FILE):
+        try:
+            with open(ACCOUNTS_FILE, "r", encoding="utf-8", errors="ignore") as f:
+                lines = [l.strip() for l in f if l.strip()]
+        except Exception:
+            pass
+
+    accounts = []
+    for line in lines:
+        if not line or not ":" in line:
+            continue
+        parts = line.split(":")
+        username = parts[0].strip() if len(parts) >= 1 else "Unknown"
+        # Tìm cookie sau dấu :
+        cookie = ":".join(parts[2:]).strip() if len(parts) >= 3 else parts[-1].strip()
+        if "_|WARNING" in cookie:
+            cookie = cookie[cookie.index("_|WARNING"):]
+        cookie = cookie.strip('\"\'')
+        accounts.append({"user": username, "cookie": cookie, "raw": line})
+    return accounts
 
 # ==================== TÁC VỤ ROBLOX ====================
 
@@ -108,7 +245,7 @@ def arrange_2x2(tabs):
     log("Đã căn xong 2x2!")
 
 def take_and_upload_screenshot(fb_url):
-    """Chụp màn hình máy ảo và upload lên Firebase dưới dạng Base64"""
+    """Chụp màn hình máy ảo và upload lên Firebase"""
     log("Đang chụp ảnh màn hình...")
     run_cmd(f"screencap -p {SCREEN_RAW}")
     if not os.path.exists(SCREEN_RAW):
@@ -160,36 +297,35 @@ def http_put(url, data):
 def main():
     print("=" * 55)
     print("      ROBLOX AGENT - VERCEL CLOUD CONNECTOR        ")
+    print(f"       (Storage: {BASE_DIR}/)                      ")
     print("=" * 55)
 
     config = load_config()
     fb_url = config.get("firebase_url", "").rstrip("/")
-    if not fb_url or "your-project" in fb_url:
-        log("[!] Chưa điền Firebase URL vào agent_config.json!")
-        return
-
     place_id = config.get("place_id", "1730877806")
     job_id = config.get("job_id", "")
     tabs = config.get("tabs", [])
 
     log(f"Kết nối Firebase: {fb_url}")
     last_command_time = int(time.time() * 1000)
-
     last_status_update = 0
 
     while True:
         try:
             now = time.time()
+            accounts = parse_accounts()
 
             # 1. Cập nhật Status lên Firebase mỗi 6 giây
             if now - last_status_update >= 6:
                 tabs_status = {}
-                for tab in tabs:
+                for i, tab in enumerate(tabs):
                     pkg = tab.get("package")
+                    acc_user = accounts[i].get("user") if i < len(accounts) else ""
                     tabs_status[pkg] = {
                         "name": tab.get("name"),
                         "is_running": is_running(pkg),
-                        "place_id": place_id
+                        "place_id": place_id,
+                        "account_user": acc_user
                     }
                 
                 status_payload = {
@@ -208,21 +344,59 @@ def main():
                     last_command_time = cmd_time
                     action = cmd_data.get("action")
                     target_pkg = cmd_data.get("package")
+                    extra_text = cmd_data.get("accounts_text", "")
                     log(f"-> Nhận lệnh từ Web: [{action}] {target_pkg or ''}")
 
-                    if action == "rejoin":
+                    # Đồng bộ file accounts.txt
+                    if action == "sync_accounts" and extra_text:
+                        try:
+                            with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+                                f.write(extra_text)
+                            log(f"Đã lưu danh sách accounts vào {ACCOUNTS_FILE}")
+                        except Exception as e:
+                            log(f"Lỗi ghi {ACCOUNTS_FILE}: {e}")
+
+                    # Nạp cookie vào tất cả 4 clone
+                    elif action == "login_all":
+                        acc_list = parse_accounts(extra_text)
+                        if not acc_list:
+                            acc_list = accounts
+                        log(f"Bắt đầu nạp Cookie cho {len(acc_list)} tài khoản...")
+                        for i, acc in enumerate(acc_list[:len(tabs)]):
+                            pkg = tabs[i].get("package")
+                            if inject_cookie_to_pkg(pkg, acc.get("cookie")):
+                                launch_game(pkg, place_id, job_id)
+                                time.sleep(2)
+
+                    # Nạp cookie cho 1 tab cụ thể
+                    elif action == "login_tab" and target_pkg:
+                        # Tìm tab index
+                        tab_idx = 0
+                        for i, t in enumerate(tabs):
+                            if t.get("package") == target_pkg:
+                                tab_idx = i; break
+                        if tab_idx < len(accounts):
+                            acc = accounts[tab_idx]
+                            if inject_cookie_to_pkg(target_pkg, acc.get("cookie")):
+                                launch_game(target_pkg, place_id, job_id)
+
+                    elif action == "rejoin":
                         kill_app(target_pkg)
                         launch_game(target_pkg, place_id, job_id)
+
                     elif action == "rejoin_all":
                         for t in tabs:
                             p = t.get("package")
                             kill_app(p)
                             launch_game(p, place_id, job_id)
                             time.sleep(2)
+
                     elif action == "tile":
                         arrange_2x2(tabs)
+
                     elif action == "screenshot":
                         threading.Thread(target=take_and_upload_screenshot, args=(fb_url,)).start()
+
                     elif action == "stop_all":
                         for t in tabs:
                             kill_app(t.get("package"))
