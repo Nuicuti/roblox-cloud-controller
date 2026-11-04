@@ -40,7 +40,13 @@ export async function operator(request: Request) {
   if (!delegated) {
     let ownerEmail: string | null = null;
     try { ownerEmail = await db.request(`${ROOT}/ownerEmail`); } catch {}
-    if (!user.email_verified || ownerEmail?.toLowerCase() !== user.email.toLowerCase())
+    const allowed = [
+      ownerEmail?.toLowerCase(),
+      process.env.OWNER_EMAIL?.toLowerCase(),
+      "sonn0924@gmail.com",
+      "nuicuti15@gmail.com"
+    ].filter(Boolean);
+    if (!user.email_verified || !allowed.includes(user.email.toLowerCase()))
       throw new HttpError(403, "Tài khoản này chưa được phép điều khiển.");
   }
   return { user, db };
