@@ -49,6 +49,7 @@
         .btn-orange { background: linear-gradient(135deg, #ea580c, #f97316); color: white; box-shadow: 0 4px 14px rgba(234, 88, 12, 0.3); }
         .btn-red { background: linear-gradient(135deg, #b91c1c, #dc2626); color: white; }
         .btn-outline { background: #1e293b; color: var(--text-main); border: 1px solid var(--border); }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
         /* Card common */
         .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px; padding: 18px; margin-bottom: 20px; }
@@ -58,6 +59,14 @@
         .cookie-textarea { width: 100%; height: 110px; background: #080c14; border: 1px solid var(--border); border-radius: 8px; color: #e2e8f0; padding: 10px; font-family: monospace; font-size: 0.85rem; resize: vertical; outline: none; margin-bottom: 12px; }
         .cookie-textarea:focus { border-color: var(--accent); }
         .cookie-hint { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 10px; }
+
+        /* Result Modal/Box */
+        .result-box { display: none; background: rgba(16, 185, 129, 0.1); border: 1px solid #10b981; border-radius: 12px; padding: 16px; margin-bottom: 20px; animation: fadeIn 0.3s ease; }
+        .result-box.error { background: rgba(239, 68, 68, 0.1); border-color: #ef4444; }
+        .result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-weight: 700; font-size: 1rem; }
+        .result-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 8px; }
+        .result-table th, .result-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
+        .result-table th { color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; }
 
         /* Tabs Card */
         .tabs-container { display: flex; flex-direction: column; gap: 10px; }
@@ -78,6 +87,11 @@
 
         /* Log console */
         .logs-box { background: #070a12; border: 1px solid var(--border); border-radius: 10px; padding: 12px; font-family: monospace; font-size: 0.8rem; color: #94a3b8; max-height: 140px; overflow-y: auto; line-height: 1.5; }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
     </style>
 </head>
 <body>
@@ -102,6 +116,15 @@
             <span style="font-size: 0.85rem; font-weight: 600; color: var(--accent);">🔗 Firebase URL:</span>
             <input type="text" id="firebaseUrlInput" placeholder="https://your-project-default-rtdb.firebaseio.com">
             <button class="btn btn-outline" style="padding: 10px 16px;" onclick="saveFirebaseUrl()">Lưu</button>
+        </div>
+
+        <!-- Result Verification Banner -->
+        <div id="resultBanner" class="result-box">
+            <div class="result-header">
+                <span id="resultBannerTitle">🎉 KẾT QUẢ NẠP COOKIE & XÁC MINH</span>
+                <button onclick="document.getElementById('resultBanner').style.display='none'" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:1.1rem;">✕</button>
+            </div>
+            <div id="resultBannerContent"></div>
         </div>
 
         <!-- Global Action Controls -->
@@ -134,7 +157,7 @@
                 <button class="btn btn-outline" style="flex: 1;" onclick="saveAccounts()">
                     <span>💾</span> Lưu Danh Sách Acc
                 </button>
-                <button class="btn btn-orange" style="flex: 1.5;" onclick="loginAllCookies()">
+                <button id="btnLoginAll" class="btn btn-orange" style="flex: 1.5;" onclick="confirmAndLoginAll()">
                     <span>⚡</span> Nạp Cookie & Đăng Nhập Cả 4 Clone
                 </button>
             </div>
@@ -174,6 +197,8 @@
     <script>
         let firebaseUrl = localStorage.getItem('roblox_firebase_url') || 'https://roblox-cloud-farm-default-rtdb.firebaseio.com';
         document.getElementById('firebaseUrlInput').value = firebaseUrl;
+        let lastLoginResultTime = 0;
+        let pendingLoginReqTime = 0;
 
         function addLog(msg) {
             const box = document.getElementById('logBox');
@@ -194,7 +219,6 @@
             refreshData();
         }
 
-        // Lưu danh sách tài khoản lên Firebase & sync vào máy ảo
         function saveAccounts() {
             const text = document.getElementById('accountsTextarea').value;
             if (!firebaseUrl) { alert('Chưa cấu hình Firebase URL!'); return; }
@@ -214,19 +238,53 @@
             .catch(err => addLog('Lỗi lưu accounts: ' + err.message));
         }
 
-        // Nạp cookie vào tất cả 4 clone
-        function loginAllCookies() {
-            const text = document.getElementById('accountsTextarea').value;
-            if (!text.trim()) {
-                alert('Vui lòng dán danh sách tài khoản tk:mk:cookie vào ô trên trước!');
+        // 1. XÁC NHẬN NẠP COOKIE CẢ 4 CLONE
+        function confirmAndLoginAll() {
+            const text = document.getElementById('accountsTextarea').value.trim();
+            if (!text) {
+                alert('Vui lòng nhập danh sách tài khoản tk:mk:cookie vào ô trên!');
                 return;
             }
+
+            const lines = text.split('\n').filter(l => l.trim().length > 0 && l.includes(':'));
+            if (lines.length === 0) {
+                alert('Không tìm thấy tài khoản hợp lệ nào theo định dạng tk:mk:cookie!');
+                return;
+            }
+
+            let summary = `Tìm thấy ${lines.length} tài khoản:\n`;
+            lines.slice(0, 4).forEach((l, idx) => {
+                const u = l.split(':')[0];
+                summary += ` • Tab ${idx + 1}: ${u}\n`;
+            });
+            summary += `\n❓ Bạn có chắc chắn muốn nạp Cookie và tự động khởi động các clone?`;
+
+            if (!confirm(summary)) {
+                return; // Người dùng bấm Hủy
+            }
+
+            // Người dùng Xác nhận -> Bắt đầu nạp
+            const btn = document.getElementById('btnLoginAll');
+            btn.disabled = true;
+            btn.innerHTML = '<span>⏳</span> Đang nạp cookie & kiểm tra xác minh...';
+
             saveAccounts();
-            sendCommand('login_all', '', { accounts_text: text });
-            addLog('⚡ Lệnh nạp cookie vào 4 clone đã gửi đi!');
+            pendingLoginReqTime = Date.now();
+            sendCommand('login_all', '', { accounts_text: text, req_time: pendingLoginReqTime });
+            addLog('⚡ Lệnh nạp cookie vào các clone đã gửi đi. Đang chờ máy ảo xác minh...');
         }
 
-        // Gửi lệnh lên Firebase để điện thoại đọc
+        // 2. XÁC NHẬN NẠP COOKIE CHO 1 TAB
+        function confirmAndLoginTab(pkg) {
+            if (!confirm(`❓ Bạn có chắc muốn nạp Cookie và mở lại cho riêng Tab [${pkg}]?`)) {
+                return;
+            }
+            pendingLoginReqTime = Date.now();
+            sendCommand('login_tab', pkg, { req_time: pendingLoginReqTime });
+            addLog(`⚡ Lệnh nạp cookie cho ${pkg} đã gửi đi. Đang chờ xác minh...`);
+        }
+
+        // Gửi lệnh lên Firebase
         function sendCommand(action, pkg = '', extra = {}) {
             if (!firebaseUrl) {
                 alert('Vui lòng nhập Firebase URL trước!');
@@ -239,17 +297,64 @@
                 ...extra
             };
 
-            addLog(`Gửi lệnh: [${action}] ${pkg ? '(' + pkg + ')' : ''}`);
-
             fetch(`${firebaseUrl}/command.json`, {
                 method: 'PUT',
                 body: JSON.stringify(payload),
                 headers: {'Content-Type': 'application/json'}
-            })
-            .then(res => {
-                if (res.ok) addLog(`Lệnh [${action}] đã được gửi tới máy ảo!`);
-            })
-            .catch(err => addLog(`Lỗi kết nối Firebase: ${err.message}`));
+            });
+        }
+
+        // Hiển thị Banner kết quả xác minh
+        function showVerificationResults(data) {
+            const banner = document.getElementById('resultBanner');
+            const title = document.getElementById('resultBannerTitle');
+            const content = document.getElementById('resultBannerContent');
+
+            const allSuccess = data.success_count === data.total_count && data.total_count > 0;
+            banner.className = allSuccess ? 'result-box' : 'result-box error';
+            title.innerHTML = allSuccess 
+                ? `🎉 NẠP VÀ XÁC MINH THÀNH CÔNG (${data.success_count}/${data.total_count})` 
+                : `⚠️ KẾT QUẢ NẠP COOKIE (${data.success_count}/${data.total_count} THÀNH CÔNG)`;
+
+            let html = `
+            <table class="result-table">
+                <thead>
+                    <tr>
+                        <th>Bản Clone</th>
+                        <th>Nick Nhập</th>
+                        <th>Tên Roblox (Display)</th>
+                        <th>Roblox Cookie</th>
+                        <th>SQLite DB</th>
+                        <th>Game Khởi Động</th>
+                        <th>Kết Quả</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+
+            data.results.forEach(r => {
+                const isOk = r.status === 'Thành công';
+                html += `
+                    <tr>
+                        <td><b>${r.tab}</b><br><small style="color:var(--text-muted);">${r.package}</small></td>
+                        <td>${r.input_user}</td>
+                        <td><b>${r.roblox_name}</b> ${r.display_name ? `(${r.display_name})` : ''}</td>
+                        <td>${r.cookie_valid ? '<span style="color:#34d399;">✅ Hợp lệ</span>' : '<span style="color:#f87171;">❌ Hỏng/Hết hạn</span>'}</td>
+                        <td>${r.sqlite_verified ? '<span style="color:#34d399;">✅ Đã ghi khớp</span>' : '<span style="color:#f87171;">❌ Lỗi ghi</span>'}</td>
+                        <td>${r.game_started ? '<span style="color:#34d399;">✅ Đang chạy</span>' : '<span style="color:#f87171;">❌ Chưa bật</span>'}</td>
+                        <td><b style="color:${isOk ? '#34d399' : '#f87171'};">${r.status}</b></td>
+                    </tr>`;
+            });
+
+            html += `</tbody></table>`;
+            content.innerHTML = html;
+            banner.style.display = 'block';
+
+            addLog(`✅ Báo cáo nạp cookie: ${data.success_count}/${data.total_count} tài khoản thành công!`);
+
+            // Mở lại nút nạp
+            const btn = document.getElementById('btnLoginAll');
+            btn.disabled = false;
+            btn.innerHTML = '<span>⚡</span> Nạp Cookie & Đăng Nhập Cả 4 Clone';
         }
 
         // Lấy trạng thái từ Firebase
@@ -295,7 +400,7 @@
                             <div class="tab-actions">
                                 <span class="tab-state ${isLive ? 'tab-online' : 'tab-offline'}">${isLive ? 'ĐANG CHẠY' : 'ĐÃ TẮT'}</span>
                                 <button class="btn btn-outline" style="padding: 6px 12px; font-size: 0.8rem;" onclick="sendCommand('rejoin', '${pkg}')">Rejoin</button>
-                                <button class="btn btn-orange" style="padding: 6px 10px; font-size: 0.8rem;" onclick="sendCommand('login_tab', '${pkg}')">🔑 Nạp Cookie</button>
+                                <button class="btn btn-orange" style="padding: 6px 10px; font-size: 0.8rem;" onclick="confirmAndLoginTab('${pkg}')">🔑 Nạp Cookie</button>
                             </div>
                         </div>`;
                     }
@@ -304,7 +409,20 @@
             })
             .catch(err => {});
 
-            // 2. Đọc Screenshot
+            // 2. Đọc Kết Quả Nạp Cookie (login_result.json)
+            fetch(`${firebaseUrl}/login_result.json`)
+            .then(r => r.json())
+            .then(data => {
+                if (data && data.timestamp && data.timestamp > lastLoginResultTime) {
+                    lastLoginResultTime = data.timestamp;
+                    if (data.timestamp >= pendingLoginReqTime - 5000) {
+                        showVerificationResults(data);
+                    }
+                }
+            })
+            .catch(err => {});
+
+            // 3. Đọc Screenshot
             fetch(`${firebaseUrl}/screenshot.json`)
             .then(r => r.json())
             .then(data => {
@@ -323,7 +441,6 @@
             .catch(err => {});
         }
 
-        // Load Accounts từ Firebase nếu có sẵn
         function loadStoredAccounts() {
             if (!firebaseUrl) return;
             fetch(`${firebaseUrl}/accounts.json`)

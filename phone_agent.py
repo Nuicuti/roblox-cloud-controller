@@ -4,7 +4,8 @@
 Agent chạy trên Android (Termux Root)
 - Lưu trữ toàn bộ dữ liệu tại: /storage/emulated/0/
 - Hỗ trợ Nạp Cookie (SQLite Injection) theo định dạng tk:mk:cookie
-- Kết nối đồng bộ hai chiều với Web Controller trên Vercel qua Firebase
+- Tự động kiểm tra xác minh 2 lần (Xác minh Roblox API + Kiểm tra SQLite readback)
+- Báo cáo kết quả chi tiết lên Firebase để hiển thị trên Web Vercel
 """
 
 import os
@@ -69,10 +70,32 @@ def run_cmd(cmd):
     except Exception:
         return ""
 
-# ==================== COOKIE INJECTION (SQLITE ENGINE) ====================
+# ==================== KIỂM TRA & XÁC MINH COOKIE ====================
+
+def verify_cookie_with_roblox(cookie):
+    """Kiểm tra lần 1: Xác minh cookie có sống và lấy info từ Roblox API"""
+    try:
+        url = "https://users.roblox.com/v1/users/authenticated"
+        cookie_header = f".ROBLOSECURITY={cookie}" if not cookie.startswith(".ROBLOSECURITY=") else cookie
+        req = urllib.request.Request(url, headers={
+            "Cookie": cookie_header,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        with urllib.request.urlopen(req, timeout=8) as r:
+            if r.status == 200:
+                data = json.loads(r.read().decode())
+                log(f"[✓] Roblox xác thực: {data.get('name')} (Display: {data.get('displayName')}, ID: {data.get('id')})")
+                return {
+                    "valid": True,
+                    "id": data.get("id"),
+                    "name": data.get("name"),
+                    "displayName": data.get("displayName")
+                }
+    except Exception as e:
+        log(f"[!] Cookie không hợp lệ hoặc lỗi kết nối: {e}")
+    return {"valid": False, "id": None, "name": None, "displayName": None}
 
 def get_pkg_owner(pkg):
-    """Lấy UID và GID sở hữu thư mục app để gán lại quyền truy cập sau khi sửa SQLite"""
     data_dir = f"/data/data/{pkg}"
     if os.path.exists(data_dir):
         st = os.stat(data_dir)
@@ -80,7 +103,6 @@ def get_pkg_owner(pkg):
     return 10000, 10000
 
 def init_app_webview(pkg):
-    """Đảm bảo thư mục webview và Cookies DB đã được app tạo ra"""
     cookie_path = f"/data/data/{pkg}/app_webview/Default/Cookies"
     if not os.path.exists(cookie_path):
         run_cmd(f"am start -n {pkg}/com.roblox.client.startup.LauncherAliasMain")
@@ -95,7 +117,6 @@ def inject_cookie_to_pkg(pkg, cookie_val):
     time.sleep(1)
     init_app_webview(pkg)
 
-    # Thử cả 2 đường dẫn phổ biến của WebView Cookies
     paths_to_check = [
         f"/data/data/{pkg}/app_webview/Default/Cookies",
         f"/data/data/{pkg}/app_webview/Cookies"
@@ -108,7 +129,7 @@ def inject_cookie_to_pkg(pkg, cookie_val):
 
     if not cookie_path:
         log(f"[X] Không tìm thấy Cookies database của {pkg}!")
-        return False
+        return False, False
 
     try:
         uid, gid = get_pkg_owner(pkg)
@@ -118,7 +139,7 @@ def inject_cookie_to_pkg(pkg, cookie_val):
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cookies'")
         if not cur.fetchone():
             conn.close()
-            return False
+            return False, False
 
         cur.execute("SELECT rowid FROM cookies WHERE host_key = '.roblox.com' AND name = '.ROBLOSECURITY'")
         row = cur.fetchone()
@@ -158,20 +179,25 @@ def inject_cookie_to_pkg(pkg, cookie_val):
             cur.execute(sql, values)
 
         conn.commit()
+
+        # Kiểm tra lần 2: Đọc lại SQLite để đảm bảo dữ liệu đã ghi thành công
+        cur.execute("SELECT value FROM cookies WHERE host_key = '.roblox.com' AND name = '.ROBLOSECURITY'")
+        readback_row = cur.fetchone()
+        sqlite_verified = bool(readback_row and readback_row[0] == cookie_val)
         conn.close()
 
-        # Cấp lại quyền cho app đọc file SQLite
+        # Cấp lại quyền cho app
         for ext in ['', '-journal', '-wal', '-shm']:
             f = cookie_path + ext
             if os.path.exists(f):
                 os.chown(f, uid, gid)
                 os.chmod(f, 0o660)
 
-        log(f"[✓] Đã nạp Cookie thành công vào {pkg}!")
-        return True
+        log(f"[✓] Đã nạp Cookie vào {pkg}! (Kiểm tra lại SQLite: {'KHỚP 100%' if sqlite_verified else 'Lỗi đọc lại'})")
+        return True, sqlite_verified
     except Exception as e:
         log(f"[X] Lỗi khi inject cookie vào {pkg}: {e}")
-        return False
+        return False, False
 
 def parse_accounts(text_or_file=""):
     """Phân tích danh sách tài khoản theo định dạng tk:mk:cookie"""
@@ -191,7 +217,6 @@ def parse_accounts(text_or_file=""):
             continue
         parts = line.split(":")
         username = parts[0].strip() if len(parts) >= 1 else "Unknown"
-        # Tìm cookie sau dấu :
         cookie = ":".join(parts[2:]).strip() if len(parts) >= 3 else parts[-1].strip()
         if "_|WARNING" in cookie:
             cookie = cookie[cookie.index("_|WARNING"):]
@@ -245,7 +270,6 @@ def arrange_2x2(tabs):
     log("Đã căn xong 2x2!")
 
 def take_and_upload_screenshot(fb_url):
-    """Chụp màn hình máy ảo và upload lên Firebase"""
     log("Đang chụp ảnh màn hình...")
     run_cmd(f"screencap -p {SCREEN_RAW}")
     if not os.path.exists(SCREEN_RAW):
@@ -293,6 +317,104 @@ def http_put(url, data):
             return True
     except Exception:
         return False
+
+# ==================== QUY TRÌNH NẠP & XÁC MINH 2 LẦN ====================
+
+def process_login_all(acc_list, tabs, place_id, job_id, fb_url):
+    results = []
+    log(f"--- BẮT ĐẦU NẠP VÀ KIỂM TRA LẦN LƯỢT {len(acc_list)} ACC ---")
+    for i, acc in enumerate(acc_list[:len(tabs)]):
+        tab_name = tabs[i].get("name")
+        pkg = tabs[i].get("package")
+        cookie = acc.get("cookie")
+        user = acc.get("user")
+
+        log(f"\n[+] Xử lý {tab_name} ({pkg}) cho user: {user}...")
+
+        # BƯỚC 1: Kiểm tra tính hợp lệ của Cookie trên máy chủ Roblox
+        roblox_info = verify_cookie_with_roblox(cookie)
+
+        inject_ok = False
+        sqlite_verified = False
+
+        if roblox_info["valid"]:
+            # BƯỚC 2: Nạp vào SQLite + BƯỚC 3: Đọc lại SQLite để kiểm tra lần 2
+            inject_ok, sqlite_verified = inject_cookie_to_pkg(pkg, cookie)
+            if inject_ok:
+                launch_game(pkg, place_id, job_id)
+                time.sleep(2)
+        else:
+            log(f"[X] Cookie của {user} không hợp lệ, bỏ qua nạp.")
+
+        status = "Thành công" if (roblox_info["valid"] and inject_ok and sqlite_verified) else "Thất bại"
+        results.append({
+            "tab": tab_name,
+            "package": pkg,
+            "input_user": user,
+            "roblox_name": roblox_info.get("name") or user,
+            "display_name": roblox_info.get("displayName") or "",
+            "roblox_id": roblox_info.get("id"),
+            "cookie_valid": roblox_info["valid"],
+            "sqlite_ok": inject_ok,
+            "sqlite_verified": sqlite_verified,
+            "game_started": is_running(pkg),
+            "status": status
+        })
+
+    # Đẩy báo cáo chi tiết lên Firebase để Web hiển thị
+    report_payload = {
+        "timestamp": int(time.time() * 1000),
+        "updated_at": datetime.now().strftime("%H:%M:%S"),
+        "success_count": sum(1 for r in results if r["status"] == "Thành công"),
+        "total_count": len(results),
+        "results": results
+    }
+    http_put(f"{fb_url}/login_result.json", report_payload)
+    log(f"\n--- ĐÃ HOÀN TẤT NẠP COOKIE: {report_payload['success_count']}/{report_payload['total_count']} THÀNH CÔNG ---")
+
+def process_login_tab(target_pkg, tabs, accounts, place_id, job_id, fb_url):
+    tab_idx = 0
+    tab_name = target_pkg
+    for i, t in enumerate(tabs):
+        if t.get("package") == target_pkg:
+            tab_idx = i
+            tab_name = t.get("name")
+            break
+
+    if tab_idx < len(accounts):
+        acc = accounts[tab_idx]
+        user = acc.get("user")
+        cookie = acc.get("cookie")
+        log(f"\n[+] Nạp riêng {tab_name} ({target_pkg}) cho {user}...")
+
+        roblox_info = verify_cookie_with_roblox(cookie)
+        inject_ok, sqlite_verified = False, False
+        if roblox_info["valid"]:
+            inject_ok, sqlite_verified = inject_cookie_to_pkg(target_pkg, cookie)
+            if inject_ok:
+                launch_game(target_pkg, place_id, job_id)
+
+        status = "Thành công" if (roblox_info["valid"] and inject_ok and sqlite_verified) else "Thất bại"
+        report_payload = {
+            "timestamp": int(time.time() * 1000),
+            "updated_at": datetime.now().strftime("%H:%M:%S"),
+            "success_count": 1 if status == "Thành công" else 0,
+            "total_count": 1,
+            "results": [{
+                "tab": tab_name,
+                "package": target_pkg,
+                "input_user": user,
+                "roblox_name": roblox_info.get("name") or user,
+                "display_name": roblox_info.get("displayName") or "",
+                "roblox_id": roblox_info.get("id"),
+                "cookie_valid": roblox_info["valid"],
+                "sqlite_ok": inject_ok,
+                "sqlite_verified": sqlite_verified,
+                "game_started": is_running(target_pkg),
+                "status": status
+            }]
+        }
+        http_put(f"{fb_url}/login_result.json", report_payload)
 
 def main():
     print("=" * 55)
@@ -347,7 +469,6 @@ def main():
                     extra_text = cmd_data.get("accounts_text", "")
                     log(f"-> Nhận lệnh từ Web: [{action}] {target_pkg or ''}")
 
-                    # Đồng bộ file accounts.txt
                     if action == "sync_accounts" and extra_text:
                         try:
                             with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
@@ -356,29 +477,14 @@ def main():
                         except Exception as e:
                             log(f"Lỗi ghi {ACCOUNTS_FILE}: {e}")
 
-                    # Nạp cookie vào tất cả 4 clone
                     elif action == "login_all":
                         acc_list = parse_accounts(extra_text)
                         if not acc_list:
                             acc_list = accounts
-                        log(f"Bắt đầu nạp Cookie cho {len(acc_list)} tài khoản...")
-                        for i, acc in enumerate(acc_list[:len(tabs)]):
-                            pkg = tabs[i].get("package")
-                            if inject_cookie_to_pkg(pkg, acc.get("cookie")):
-                                launch_game(pkg, place_id, job_id)
-                                time.sleep(2)
+                        threading.Thread(target=process_login_all, args=(acc_list, tabs, place_id, job_id, fb_url)).start()
 
-                    # Nạp cookie cho 1 tab cụ thể
                     elif action == "login_tab" and target_pkg:
-                        # Tìm tab index
-                        tab_idx = 0
-                        for i, t in enumerate(tabs):
-                            if t.get("package") == target_pkg:
-                                tab_idx = i; break
-                        if tab_idx < len(accounts):
-                            acc = accounts[tab_idx]
-                            if inject_cookie_to_pkg(target_pkg, acc.get("cookie")):
-                                launch_game(target_pkg, place_id, job_id)
+                        threading.Thread(target=process_login_tab, args=(target_pkg, tabs, accounts, place_id, job_id, fb_url)).start()
 
                     elif action == "rejoin":
                         kill_app(target_pkg)
