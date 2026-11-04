@@ -1,8 +1,7 @@
 import "server-only";
-import { getApps, initializeApp } from "firebase-admin/app";
-import { getAuth } from "firebase-admin/auth";
 import { NextResponse } from "next/server";
 import { ROOT } from "./contracts";
+import { verifyFirebaseIdToken } from "./verify-token";
 
 export class HttpError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -25,16 +24,14 @@ export function services(token: string) {
   if (!projectId || !databaseURL) {
     throw new HttpError(503, "Dashboard chưa được cấu hình kết nối Firebase trên Vercel.");
   }
-  // ID token signatures use Google's public certificates. No Admin database credential is loaded.
-  const app = getApps()[0] ?? initializeApp({ projectId });
-  return { auth: getAuth(app), db: new FirebaseREST(databaseURL, token) };
+  return { projectId, db: new FirebaseREST(databaseURL, token) };
 }
 export async function operator(request: Request) {
   const bearer = request.headers.get("authorization") ?? "";
   if (!bearer.startsWith("Bearer ")) throw new HttpError(401, "Bạn cần đăng nhập.");
-  const { auth, db } = services(bearer.slice(7));
+  const { projectId, db } = services(bearer.slice(7));
   let user;
-  try { user = await auth.verifyIdToken(bearer.slice(7), false); }
+  try { user = await verifyFirebaseIdToken(bearer.slice(7), projectId); }
   catch { throw new HttpError(401, "Phiên đăng nhập đã hết hạn."); }
   if (!user.email || user.firebase.sign_in_provider === "anonymous") {
     throw new HttpError(403, "Tài khoản này chưa được phép điều khiển.");

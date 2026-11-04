@@ -8,13 +8,13 @@
     "build": "next build",
     "start": "next start --hostname 127.0.0.1",
     "check": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/contracts.test.mjs",
+    "test": "node --experimental-strip-types --test tests/contracts.test.mjs tests/token.test.mjs",
     "test:crypto": "node --experimental-strip-types --test tests/seal.test.mjs",
     "test:rules": "npx -y firebase-tools@15.34.2 emulators:exec --only database --project demo-noka-controller \"node --test tests/rules.test.mjs\""
   },
   "dependencies": {
     "firebase": "13.2.0",
-    "firebase-admin": "14.5.0",
+    "jose": "6.2.15",
     "lucide-react": "1.68.0",
     "next": "16.4.5",
     "react": "19.3.1",

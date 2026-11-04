@@ -173,11 +173,12 @@ Lệnh “Gửi” mới chỉ là đã xếp vào hàng đợi; kết quả th�
 
 - TypeScript: đạt.
 - Build Next.js: đạt trước khi cấu hình Firebase thật; sẽ chạy lại sau thay đổi cấu hình.
-- 5 kiểm tra hợp đồng API: đạt, gồm từ chối shell tùy ý, gói Android ngoài phạm vi, tài khoản dạng rõ và quyền sở hữu sai.
+- 7 kiểm tra hợp đồng API/chữ ký token: đạt, gồm từ chối shell tùy ý, gói Android ngoài phạm vi, tài khoản dạng rõ, quyền sở hữu sai, chữ ký giả, issuer/audience sai và token hết hạn.
 - 11 kiểm tra agent: đạt sau cập nhật hoán đổi ô, gồm đối chiếu task, lưới không chồng, watchdog, replay và sao lưu SQLite. Kết quả cuối được ghi trong tài liệu bàn giao.
 - 1 kiểm tra liên thông: mã hóa bằng đúng hàm WebCrypto của dashboard rồi giải bằng agent Python đạt.
 - 9 kiểm tra quyền trên Firebase Realtime Database Emulator: đạt, gồm ngăn máy đọc máy khác, ngăn chiếm quyền máy, kiểm tra lưu vault/lệnh nguyên tử và phân biệt email chủ sở hữu đã/chưa xác minh.
 - Các API local không có đăng nhập trả HTTP 401. Trang dashboard trả HTTP 200.
+- Firebase Anonymous Auth thật đã được kiểm tra; token hợp lệ nhưng không có quyền operator bị API local trả HTTP 403. Đọc gốc database thật không đăng nhập trả HTTP 401 sau khi triển khai rules. Tài khoản anonymous do bài kiểm tra tạo đã được xóa sau kiểm tra.
 - Chưa kiểm tra trực quan bằng trình duyệt trong phiên này do công cụ điều khiển trình duyệt dừng ở bước xác minh URL Windows.
 - Chưa chạy agent trên Redfinger thật hoặc kiểm tra đăng nhập tài khoản Roblox thật.
 
@@ -186,6 +187,7 @@ Emulator dùng project demo `demo-noka-controller`; các bài kiểm tra không 
 ## Nguồn kỹ thuật
 
 - [Firebase Auth REST](https://firebase.google.com/docs/reference/rest/auth).
+- [Đối chiếu chữ ký và claims của Firebase ID token](https://firebase.google.com/docs/auth/admin/verify-id-tokens).
 - [Xác thực Realtime Database REST](https://firebase.google.com/docs/database/rest/auth).
 - [Đọc Realtime Database qua REST](https://firebase.google.com/docs/database/rest/retrieve-data).
 - [Đa cửa sổ Android](https://source.android.com/docs/core/display/multi-window).
