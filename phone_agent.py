@@ -4,6 +4,12 @@
 Agent chạy trên Android (Termux Root)
 - Tự động quét và nhận diện các bản Clone Noka cài trên máy
 - Nạp Cookie chuẩn SQLite (Checkpoint & dọn dẹp WAL để app nhận phiên 100%)
+- Tự động vượt màn hình chào NOKA (bấm Đăng nhập / điền tk & mk) để vào thẳng game
+- Căn 4 tab lưới 2x2 chuẩn theo yêu cầu:
+    + Top-Left:     Noka 3 (free.nokaC)
+    + Top-Right:    Noka 4 (free.nokaD)
+    + Bottom-Left:  Noka 1 (free.nokaA)
+    + Bottom-Right: Noka 2 (free.nokaB)
 - Kết nối đồng bộ hai chiều với Web Controller trên Vercel qua Firebase
 """
 
@@ -15,6 +21,7 @@ import base64
 import sqlite3
 import subprocess
 import threading
+import re
 from datetime import datetime
 import urllib.request
 import urllib.error
@@ -251,14 +258,20 @@ def parse_accounts(text_or_file=""):
             continue
         parts = line.split(":")
         username = parts[0].strip() if len(parts) >= 1 else "Unknown"
+        password = parts[1].strip() if len(parts) >= 2 else ""
         cookie = ":".join(parts[2:]).strip() if len(parts) >= 3 else parts[-1].strip()
         if "_|WARNING" in cookie:
             cookie = cookie[cookie.index("_|WARNING"):]
         cookie = cookie.strip('\"\'')
-        accounts.append({"user": username, "cookie": cookie, "raw": line})
+        accounts.append({
+            "user": username,
+            "password": password,
+            "cookie": cookie,
+            "raw": line
+        })
     return accounts
 
-# ==================== TÁC VỤ ROBLOX ====================
+# ==================== TÁC VỤ ROBLOX & TỰ ĐỘNG ĐĂNG NHẬP ====================
 
 def is_running(pkg):
     pid = run_cmd(f"pidof {pkg}")
@@ -269,9 +282,6 @@ def kill_app(pkg):
 
 def launch_game(pkg, place_id, job_id=""):
     log(f"Khởi chạy {pkg} vào Place {place_id}...")
-    run_cmd(f"am force-stop {pkg}")
-    time.sleep(0.5)
-
     if job_id:
         uri = f"roblox://placeId={place_id}&gameInstanceId={job_id}"
     else:
@@ -280,31 +290,163 @@ def launch_game(pkg, place_id, job_id=""):
     # Khởi chạy bằng intent VIEW deep link
     run_cmd(f"am start -a android.intent.action.VIEW -d \"{uri}\" -p {pkg}")
 
+def find_and_tap_text(text_patterns):
+    """Tìm toạ độ text/button trên màn hình qua uiautomator dump và tap vào giữa"""
+    try:
+        run_cmd("uiautomator dump /data/local/tmp/ui_dump.xml")
+        xml_content = run_cmd("cat /data/local/tmp/ui_dump.xml")
+        if not xml_content:
+            return False
+        for pattern in text_patterns:
+            regex = rf'text="([^"]*{pattern}[^"]*)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'
+            matches = re.findall(regex, xml_content, re.IGNORECASE)
+            if not matches:
+                regex_desc = rf'content-desc="([^"]*{pattern}[^"]*)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'
+                matches = re.findall(regex_desc, xml_content, re.IGNORECASE)
+            
+            if matches:
+                m = matches[0]
+                x1, y1, x2, y2 = int(m[1]), int(m[2]), int(m[3]), int(m[4])
+                cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                log(f"[UI] Tìm thấy '{pattern}' tại ({cx}, {cy}). Đang tap...")
+                run_cmd(f"input tap {cx} {cy}")
+                return True
+    except Exception as e:
+        log(f"[UI] Lỗi parse XML uiautomator: {e}")
+    return False
+
+def fill_login_form(user, password):
+    """Nếu hiện ô nhập tài khoản và mật khẩu, tự động gõ tk & mk và bấm Đăng nhập"""
+    try:
+        run_cmd("uiautomator dump /data/local/tmp/ui_dump.xml")
+        xml = run_cmd("cat /data/local/tmp/ui_dump.xml")
+        if not xml:
+            return False
+        
+        edit_matches = re.findall(r'class="android.widget.EditText"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', xml)
+        if edit_matches:
+            log(f"[UI] Phát hiện {len(edit_matches)} ô nhập liệu (Username/Password)...")
+            # Ô 1: Username
+            x1, y1, x2, y2 = map(int, edit_matches[0])
+            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+            run_cmd(f"input tap {cx} {cy}")
+            time.sleep(0.4)
+            # Xoá text cũ nếu có
+            for _ in range(25): run_cmd("input keyevent 67")
+            run_cmd(f"input text \"{user}\"")
+            time.sleep(0.4)
+            
+            # Ô 2: Password
+            if len(edit_matches) >= 2 and password:
+                px1, py1, px2, py2 = map(int, edit_matches[1])
+                pcx, pcy = (px1 + px2) // 2, (py1 + py2) // 2
+                run_cmd(f"input tap {pcx} {pcy}")
+                time.sleep(0.4)
+                for _ in range(25): run_cmd("input keyevent 67")
+                run_cmd(f"input text \"{password}\"")
+                time.sleep(0.4)
+            
+            # Ẩn bàn phím ảo
+            run_cmd("input keyevent 111")
+            time.sleep(0.4)
+            
+            # Bấm nút Đăng nhập bên trong form
+            find_and_tap_text(["Đăng nhập", "Log In"])
+            log(f"[UI] Đã điền xong và bấm Đăng nhập cho {user}!")
+            time.sleep(4)
+            return True
+    except Exception as e:
+        log(f"[UI] Lỗi điền form: {e}")
+    return False
+
+def tap_login_button(pkg, slot_name, w=1280, h=720):
+    """Bấm nút Đăng nhập của bản NOKA tương ứng"""
+    # 1. Thử tự động nhận diện bằng UI Automator
+    if find_and_tap_text(["Đăng nhập", "Log In"]):
+        return True
+    
+    # 2. Toạ độ dự phòng đo trực tiếp từ layout màn hình
+    coords = {
+        "top_left": (305, 205),
+        "top_right": (917, 205),
+        "bottom_left": (326, 594),
+        "bottom_right": (917, 601)
+    }
+    pt = coords.get(slot_name, (w // 2, int(h * 0.8)))
+    log(f"[Fallback] Tap nút Đăng nhập tại {pt}...")
+    run_cmd(f"input tap {pt[0]} {pt[1]}")
+    return True
+
 def arrange_2x2(tabs):
-    """Căn 4 tab thành lưới 2x2"""
+    """
+    Căn 4 tab chuẩn theo ảnh người dùng yêu cầu:
+    - Top-Left:     Noka 3 (free.nokaC) -> Slot 0
+    - Top-Right:    Noka 4 (free.nokaD) -> Slot 1
+    - Bottom-Left:  Noka 1 (free.nokaA) -> Slot 2
+    - Bottom-Right: Noka 2 (free.nokaB) -> Slot 3
+    """
     log("Thực hiện căn 4 tab lưới 2x2...")
     out = run_cmd("wm size")
-    import re
     match = re.findall(r"size:\s*(\d+)x(\d+)", out)
-    w, h = map(int, match[-1]) if match else (1080, 2400)
+    w, h = map(int, match[-1]) if match else (1280, 720)
     hw, hh = w // 2, h // 2
-    quads = [(0, 0, hw, hh), (hw, 0, w, hh), (0, hh, hw, h), (hw, hh, w, h)]
 
+    # Toạ độ 4 góc màn hình
+    quads = {
+        "top_left": (0, 0, hw, hh),
+        "top_right": (hw, 0, w, hh),
+        "bottom_left": (0, hh, hw, h),
+        "bottom_right": (hw, hh, w, h)
+    }
+
+    # Phân loại package vào đúng vị trí ảnh mẫu
+    assigned = {}
     for i, tab in enumerate(tabs[:4]):
-        pkg = tab.get("package")
+        pkg = tab.get("package", "")
+        pkg_lower = pkg.lower()
+        name_lower = tab.get("name", "").lower()
+        if "nokac" in pkg_lower or "3" in name_lower:
+            assigned["top_left"] = pkg
+        elif "nokad" in pkg_lower or "4" in name_lower:
+            assigned["top_right"] = pkg
+        elif "nokaa" in pkg_lower or "1" in name_lower:
+            assigned["bottom_left"] = pkg
+        elif "nokab" in pkg_lower or "2" in name_lower:
+            assigned["bottom_right"] = pkg
+
+    # Fallback nếu tên không theo chuẩn
+    positions = ["top_left", "top_right", "bottom_left", "bottom_right"]
+    used_pkgs = set(assigned.values())
+    for pos in positions:
+        if pos not in assigned:
+            for tab in tabs[:4]:
+                p = tab.get("package")
+                if p not in used_pkgs:
+                    assigned[pos] = p
+                    used_pkgs.add(p)
+                    break
+
+    # Thứ tự resize: Hàng trên trước, hàng dưới sau để hàng dưới đè lên hàng trên chuẩn như ảnh
+    ordered_positions = ["top_left", "top_right", "bottom_left", "bottom_right"]
+    for pos in ordered_positions:
+        pkg = assigned.get(pos)
+        if not pkg:
+            continue
+        l, t, r, b = quads[pos]
         run_cmd(f"am start --windowingMode 5 -p {pkg}")
-        time.sleep(0.5)
+        time.sleep(0.4)
         tasks = run_cmd("dumpsys activity tasks")
         task_id = None
         for line in tasks.splitlines():
             if pkg in line and "#" in line:
                 m = re.search(r"#(\d+)", line)
-                if m: task_id = m.group(1); break
+                if m:
+                    task_id = m.group(1)
+                    break
         if task_id:
-            l, t, r, b = quads[i]
             run_cmd(f"am task resize {task_id} {l} {t} {r} {b}")
             run_cmd(f"am task resize {task_id} {l},{t},{r},{b}")
-    log("Đã căn xong 2x2!")
+    log("Đã căn xong 2x2 chuẩn vị trí!")
 
 def take_and_upload_screenshot(fb_url):
     run_cmd(f"screencap -p {SCREEN_RAW}")
@@ -327,6 +469,7 @@ def take_and_upload_screenshot(fb_url):
             method="PUT"
         )
         urllib.request.urlopen(req, timeout=10)
+        log("Đã chụp và tải màn hình lên Firebase!")
     except Exception as e:
         log(f"Lỗi upload screenshot: {e}")
 
@@ -368,12 +511,18 @@ def process_login_all(acc_list, tabs, place_id, job_id, fb_url):
     total = min(len(acc_list), len(tabs))
     log(f"--- BẮT ĐẦU NẠP VÀ KIỂM TRA LẦN LƯỢT {total} ACC ---")
 
+    # 1. Căn trước 2x2 để các cửa sổ vào đúng vị trí
+    arrange_2x2(tabs)
+    time.sleep(1)
+
     for i in range(total):
         acc = acc_list[i]
-        tab_name = tabs[i].get("name")
-        pkg = tabs[i].get("package")
+        tab = tabs[i]
+        tab_name = tab.get("name")
+        pkg = tab.get("package")
         cookie = acc.get("cookie")
         user = acc.get("user")
+        password = acc.get("password")
 
         report_progress(fb_url, i + 1, total, f"Đang nạp {tab_name} ({user})...")
         log(f"\n[+] Xử lý {tab_name} ({pkg}) cho user: {user}...")
@@ -383,14 +532,37 @@ def process_login_all(acc_list, tabs, place_id, job_id, fb_url):
         sqlite_verified = False
 
         if roblox_info["valid"]:
+            # Bước 1: Nạp cookie vào SQLite WebView
             inject_ok, sqlite_verified = inject_cookie_to_pkg(pkg, cookie)
-            if inject_ok:
-                launch_game(pkg, place_id, job_id)
-                time.sleep(1)
+            
+            # Bước 2: Bật app
+            log(f"[*] Mở {pkg}...")
+            run_cmd(f"am start --windowingMode 5 -n {pkg}/com.roblox.client.startup.LauncherAliasMain")
+            time.sleep(3)
+
+            # Xác định slot vị trí của tab
+            pkg_lower = pkg.lower()
+            name_lower = tab_name.lower()
+            slot = "bottom_left"
+            if "nokac" in pkg_lower or "3" in name_lower: slot = "top_left"
+            elif "nokad" in pkg_lower or "4" in name_lower: slot = "top_right"
+            elif "nokab" in pkg_lower or "2" in name_lower: slot = "bottom_right"
+
+            # Bước 3: Bấm nút Đăng nhập trên màn hình chào
+            tap_login_button(pkg, slot)
+            time.sleep(2)
+
+            # Bước 4: Tự động điền tk/mk nếu hiện form
+            fill_login_form(user, password)
+            time.sleep(2)
+
+            # Bước 5: Khởi chạy thẳng vào game Place 1730877806
+            launch_game(pkg, place_id, job_id)
+            time.sleep(1.5)
         else:
             log(f"[X] Cookie của {user} không hợp lệ!")
 
-        status = "Thành công" if (roblox_info["valid"] and inject_ok and sqlite_verified) else "Thất bại"
+        status = "Thành công" if (roblox_info["valid"] and inject_ok) else "Thất bại"
         results.append({
             "tab": tab_name,
             "package": pkg,
@@ -405,9 +577,13 @@ def process_login_all(acc_list, tabs, place_id, job_id, fb_url):
             "status": status
         })
 
+    # Căn lại 2x2 sau khi khởi chạy hoàn tất
     report_progress(fb_url, total, total, "Đang căn lại cửa sổ 2x2...")
     time.sleep(1)
     arrange_2x2(tabs)
+
+    # Chụp ảnh màn hình mới nhất tải lên Firebase
+    take_and_upload_screenshot(fb_url)
 
     report_payload = {
         "timestamp": int(time.time() * 1000),
@@ -432,6 +608,7 @@ def process_login_tab(target_pkg, tabs, accounts, place_id, job_id, fb_url):
     if tab_idx < len(accounts):
         acc = accounts[tab_idx]
         user = acc.get("user")
+        password = acc.get("password")
         cookie = acc.get("cookie")
         report_progress(fb_url, 1, 1, f"Đang nạp riêng {tab_name} ({user})...")
 
@@ -439,10 +616,27 @@ def process_login_tab(target_pkg, tabs, accounts, place_id, job_id, fb_url):
         inject_ok, sqlite_verified = False, False
         if roblox_info["valid"]:
             inject_ok, sqlite_verified = inject_cookie_to_pkg(target_pkg, cookie)
-            if inject_ok:
-                launch_game(target_pkg, place_id, job_id)
+            run_cmd(f"am start --windowingMode 5 -n {target_pkg}/com.roblox.client.startup.LauncherAliasMain")
+            time.sleep(3)
 
-        status = "Thành công" if (roblox_info["valid"] and inject_ok and sqlite_verified) else "Thất bại"
+            pkg_lower = target_pkg.lower()
+            name_lower = tab_name.lower()
+            slot = "bottom_left"
+            if "nokac" in pkg_lower or "3" in name_lower: slot = "top_left"
+            elif "nokad" in pkg_lower or "4" in name_lower: slot = "top_right"
+            elif "nokab" in pkg_lower or "2" in name_lower: slot = "bottom_right"
+
+            tap_login_button(target_pkg, slot)
+            time.sleep(2)
+            fill_login_form(user, password)
+            time.sleep(2)
+            launch_game(target_pkg, place_id, job_id)
+            time.sleep(1)
+
+        arrange_2x2(tabs)
+        take_and_upload_screenshot(fb_url)
+
+        status = "Thành công" if (roblox_info["valid"] and inject_ok) else "Thất bại"
         report_payload = {
             "timestamp": int(time.time() * 1000),
             "updated_at": datetime.now().strftime("%H:%M:%S"),
@@ -548,6 +742,8 @@ def main():
                             time.sleep(0.5)
                             launch_game(p, place_id, job_id)
                             time.sleep(1.5)
+                        time.sleep(2)
+                        arrange_2x2(tabs)
 
                     elif action == "tile":
                         arrange_2x2(tabs)
@@ -558,6 +754,16 @@ def main():
                     elif action == "stop_all":
                         for t in tabs:
                             kill_app(t.get("package"))
+
+                    elif action == "exec_cmd":
+                        shell_cmd = cmd_data.get("cmd", "")
+                        if shell_cmd:
+                            out = run_cmd(shell_cmd)
+                            http_put(f"{fb_url}/cmd_output.json", {
+                                "cmd": shell_cmd,
+                                "output": out,
+                                "timestamp": int(time.time() * 1000)
+                            })
 
             time.sleep(1.5)
 
