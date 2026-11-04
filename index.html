@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Roblox Cloud Manager (Vercel)</title>
+    <style>
+        :root {
+            --bg-main: #0b0f19;
+            --bg-card: #131b2e;
+            --bg-card-hover: #1c2742;
+            --accent: #38bdf8;
+            --accent-glow: rgba(56, 189, 248, 0.35);
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --purple: #a855f7;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --border: #223052;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+        body { background: var(--bg-main); color: var(--text-main); min-height: 100vh; padding: 16px; display: flex; justify-content: center; }
+        .container { width: 100%; max-width: 850px; }
+
+        /* Header */
+        .header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 16px; border-bottom: 1px solid var(--border); margin-bottom: 20px; }
+        .brand { display: flex; align-items: center; gap: 10px; }
+        .logo-icon { width: 36px; height: 36px; background: linear-gradient(135deg, var(--accent), var(--purple)); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 1.2rem; }
+        .brand h1 { font-size: 1.25rem; font-weight: 700; letter-spacing: 0.5px; }
+        .status-badge { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: 600; background: #1e293b; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
+        .dot.online { background: var(--success); box-shadow: 0 0 8px var(--success); }
+
+        /* Config Card */
+        .config-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+        .config-card input { flex: 1; min-width: 260px; background: #080c14; border: 1px solid var(--border); color: var(--text-main); padding: 10px 14px; border-radius: 8px; font-size: 0.9rem; outline: none; }
+        .config-card input:focus { border-color: var(--accent); }
+
+        /* Action Buttons */
+        .actions-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
+        .btn { border: none; border-radius: 10px; padding: 14px; font-weight: 600; font-size: 0.95rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: all 0.2s ease; }
+        .btn:active { transform: scale(0.98); }
+        .btn-blue { background: linear-gradient(135deg, #0284c7, #2563eb); color: white; box-shadow: 0 4px 14px rgba(2, 132, 199, 0.3); }
+        .btn-purple { background: linear-gradient(135deg, #7c3aed, #9333ea); color: white; box-shadow: 0 4px 14px rgba(124, 58, 237, 0.3); }
+        .btn-green { background: linear-gradient(135deg, #059669, #10b981); color: white; box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3); }
+        .btn-red { background: linear-gradient(135deg, #b91c1c, #dc2626); color: white; }
+        .btn-outline { background: #1e293b; color: var(--text-main); border: 1px solid var(--border); }
+
+        /* Tabs Card */
+        .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px; padding: 18px; margin-bottom: 20px; }
+        .card-title { font-size: 1.05rem; font-weight: 700; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
+        .tabs-container { display: flex; flex-direction: column; gap: 10px; }
+        .tab-row { display: flex; justify-content: space-between; align-items: center; background: #0c1220; border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; }
+        .tab-info { display: flex; flex-direction: column; gap: 2px; }
+        .tab-name { font-weight: 600; font-size: 0.95rem; color: #e2e8f0; }
+        .tab-pkg { font-size: 0.8rem; color: var(--text-muted); font-family: monospace; }
+        .tab-state { font-size: 0.8rem; padding: 4px 10px; border-radius: 6px; font-weight: bold; }
+        .tab-online { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+        .tab-offline { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+
+        /* Screenshot Preview */
+        .screen-container { width: 100%; border-radius: 10px; background: #000; border: 1px solid var(--border); overflow: hidden; min-height: 220px; display: flex; align-items: center; justify-content: center; position: relative; }
+        .screen-img { width: 100%; height: auto; max-height: 480px; object-fit: contain; display: block; }
+        .screen-placeholder { color: var(--text-muted); font-size: 0.9rem; text-align: center; }
+        .timestamp { position: absolute; bottom: 8px; right: 8px; background: rgba(0,0,0,0.7); font-size: 0.75rem; padding: 3px 8px; border-radius: 4px; color: #e2e8f0; }
+
+        /* Log console */
+        .logs-box { background: #070a12; border: 1px solid var(--border); border-radius: 10px; padding: 12px; font-family: monospace; font-size: 0.8rem; color: #94a3b8; max-height: 140px; overflow-y: auto; line-height: 1.5; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <div class="brand">
+                <div class="logo-icon">⚡</div>
+                <div>
+                    <h1>Roblox Cloud Controller</h1>
+                    <span style="font-size: 0.75rem; color: var(--text-muted);">Hosted on Vercel</span>
+                </div>
+            </div>
+            <div class="status-badge" id="phoneStatusBadge">
+                <div class="dot" id="statusDot"></div>
+                <span id="statusText">Đang kiểm tra...</span>
+            </div>
+        </div>
+
+        <!-- Database Settings -->
+        <div class="config-card">
+            <span style="font-size: 0.85rem; font-weight: 600; color: var(--accent);">🔗 Firebase URL:</span>
+            <input type="text" id="firebaseUrlInput" placeholder="https://your-project-default-rtdb.firebaseio.com">
+            <button class="btn btn-outline" style="padding: 10px 16px;" onclick="saveFirebaseUrl()">Lưu</button>
+        </div>
+
+        <!-- Global Action Controls -->
+        <div class="actions-grid">
+            <button class="btn btn-purple" onclick="sendCommand('tile')">
+                <span>📐</span> Căn 4 Tab 2x2
+            </button>
+            <button class="btn btn-blue" onclick="sendCommand('rejoin_all')">
+                <span>🔄</span> Rejoin Tất Cả
+            </button>
+            <button class="btn btn-green" onclick="sendCommand('screenshot')">
+                <span>📸</span> Chụp Màn Hình
+            </button>
+            <button class="btn btn-red" onclick="sendCommand('stop_all')">
+                <span>⏹️</span> Đóng Tất Cả Game
+            </button>
+        </div>
+
+        <!-- Tab List Status -->
+        <div class="card">
+            <div class="card-title">
+                <span>📱 Danh Sách 4 Bản Clone</span>
+                <span style="font-size: 0.8rem; font-weight: normal; color: var(--text-muted);" id="lastCheckTime">Cập nhật: Chưa rõ</span>
+            </div>
+            <div class="tabs-container" id="tabsList">
+                <!-- Render bằng Javascript -->
+                <div style="text-align: center; color: var(--text-muted); padding: 15px;">Chưa kết nối Firebase...</div>
+            </div>
+        </div>
+
+        <!-- Live Screenshot Preview -->
+        <div class="card">
+            <div class="card-title">
+                <span>👁️ Màn Hình Trực Tiếp (Live Screen)</span>
+                <button class="btn btn-outline" style="padding: 6px 12px; font-size: 0.8rem;" onclick="sendCommand('screenshot')">Chụp ngay</button>
+            </div>
+            <div class="screen-container">
+                <img id="screenImg" class="screen-img" style="display: none;" alt="Màn hình điện thoại">
+                <div id="screenPlaceholder" class="screen-placeholder">Bấm "Chụp Màn Hình" để xem máy ảo đang hiển thị gì</div>
+                <div id="screenTime" class="timestamp" style="display: none;"></div>
+            </div>
+        </div>
+
+        <!-- Event Logs -->
+        <div class="card">
+            <div class="card-title">📜 Nhật Ký Hoạt Động</div>
+            <div class="logs-box" id="logBox">Sẵn sàng kết nối...</div>
+        </div>
+    </div>
+
+    <script>
+        let firebaseUrl = localStorage.getItem('roblox_firebase_url') || '';
+        document.getElementById('firebaseUrlInput').value = firebaseUrl;
+
+        function addLog(msg) {
+            const box = document.getElementById('logBox');
+            const now = new Date().toLocaleTimeString();
+            box.innerHTML = `[${now}] ${msg}<br>` + box.innerHTML;
+        }
+
+        function saveFirebaseUrl() {
+            let val = document.getElementById('firebaseUrlInput').value.trim();
+            if (val.endsWith('/')) val = val.slice(0, -1);
+            if (!val.startsWith('http')) {
+                alert('Vui lòng nhập đúng định dạng URL (bắt đầu bằng https://...)');
+                return;
+            }
+            localStorage.setItem('roblox_firebase_url', val);
+            firebaseUrl = val;
+            addLog('Đã lưu Firebase URL: ' + val);
+            refreshData();
+        }
+
+        // Gửi lệnh lên Firebase để điện thoại đọc
+        function sendCommand(action, pkg = '') {
+            if (!firebaseUrl) {
+                alert('Vui lòng nhập Firebase URL trước!');
+                return;
+            }
+            const payload = {
+                action: action,
+                package: pkg,
+                timestamp: Date.now()
+            };
+
+            addLog(`Gửi lệnh: ${action} ${pkg ? '(' + pkg + ')' : ''}...`);
+
+            fetch(`${firebaseUrl}/command.json`, {
+                method: 'PUT',
+                body: JSON.stringify(payload),
+                headers: {'Content-Type': 'application/json'}
+            })
+            .then(res => {
+                if (res.ok) addLog(`Đã gửi lệnh [${action}] thành công!`);
+                else addLog(`Lỗi gửi lệnh: ${res.statusText}`);
+            })
+            .catch(err => addLog(`Lỗi kết nối Firebase: ${err.message}`));
+        }
+
+        // Lấy trạng thái từ Firebase
+        function refreshData() {
+            if (!firebaseUrl) return;
+
+            // 1. Đọc Status
+            fetch(`${firebaseUrl}/status.json`)
+            .then(r => r.json())
+            .then(data => {
+                if (!data) return;
+                
+                // Kiểm tra máy còn online không (dựa vào last_seen trong vòng 25s)
+                const nowSec = Math.floor(Date.now() / 1000);
+                const lastSeenSec = data.last_seen_epoch || 0;
+                const isOnline = (nowSec - lastSeenSec) < 30;
+
+                const dot = document.getElementById('statusDot');
+                const txt = document.getElementById('statusText');
+                if (isOnline) {
+                    dot.className = 'dot online';
+                    txt.innerText = 'Máy ảo: ONLINE';
+                    txt.style.color = '#34d399';
+                } else {
+                    dot.className = 'dot';
+                    txt.innerText = 'Máy ảo: OFFLINE';
+                    txt.style.color = '#f87171';
+                }
+
+                document.getElementById('lastCheckTime').innerText = 'Cập nhật: ' + (data.last_seen || 'Chưa có');
+
+                // Render 4 Tab
+                if (data.tabs) {
+                    let html = '';
+                    for (const [pkg, info] of Object.entries(data.tabs)) {
+                        const isLive = info.is_running;
+                        html += `
+                        <div class="tab-row">
+                            <div class="tab-info">
+                                <span class="tab-name">${info.name || pkg}</span>
+                                <span class="tab-pkg">${pkg} (Map: ${info.place_id || '1730877806'})</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span class="tab-state ${isLive ? 'tab-online' : 'tab-offline'}">${isLive ? 'ĐANG CHẠY' : 'ĐÃ TẮT'}</span>
+                                <button class="btn btn-outline" style="padding: 6px 12px; font-size: 0.8rem;" onclick="sendCommand('rejoin', '${pkg}')">Rejoin</button>
+                            </div>
+                        </div>`;
+                    }
+                    document.getElementById('tabsList').innerHTML = html;
+                }
+            })
+            .catch(err => {});
+
+            // 2. Đọc Screenshot
+            fetch(`${firebaseUrl}/screenshot.json`)
+            .then(r => r.json())
+            .then(data => {
+                if (data && data.image_base64) {
+                    const img = document.getElementById('screenImg');
+                    const placeholder = document.getElementById('screenPlaceholder');
+                    const timeTag = document.getElementById('screenTime');
+
+                    img.src = data.image_base64;
+                    img.style.display = 'block';
+                    placeholder.style.display = 'none';
+                    timeTag.style.display = 'block';
+                    timeTag.innerText = 'Chụp lúc: ' + (data.updated_at || '');
+                }
+            })
+            .catch(err => {});
+        }
+
+        // Tự động cập nhật mỗi 3 giây
+        setInterval(refreshData, 3000);
+        if (firebaseUrl) refreshData();
+    </script>
+</body>
+</html>

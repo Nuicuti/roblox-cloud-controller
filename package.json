@@ -1,0 +1,8 @@
+{
+  "name": "roblox-cloud-controller",
+  "version": "1.0.0",
+  "description": "Vercel Web Controller for Roblox Android Farm",
+  "scripts": {
+    "start": "npx serve ."
+  }
+}
