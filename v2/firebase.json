@@ -1,0 +1,5 @@
+{
+  "database": { "rules": "firebase/database.rules.json" },
+  "auth": { "providers": { "anonymous": true, "emailPassword": true } },
+  "emulators": { "database": { "port": 9000 }, "ui": { "enabled": false } }
+}

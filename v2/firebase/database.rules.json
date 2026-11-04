@@ -1,0 +1,168 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "nokaController": {
+      "v1": {
+        "operators": {
+          "$uid": {
+            ".read": "auth != null && auth.uid === $uid"
+          }
+        },
+        "owners": {
+          "$owner": {
+            ".read": "auth != null && auth.uid === $owner && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email))",
+            "$device": {
+              ".write": "auth != null && auth.uid === $owner && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email)) && newData.val() === true && root.child('nokaController/v1/devices').child($device).child('meta/ownerUid').val() === auth.uid"
+            }
+          }
+        },
+        "pairingCodes": {
+          "$code": {
+            ".read": "auth != null && ((root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email)) || data.child('deviceUid').val() === auth.uid)",
+            ".write": "auth != null && !data.exists() && newData.child('deviceUid').val() === auth.uid && $code.matches(/^[a-f0-9]{32}$/)",
+            ".validate": "newData.hasChildren(['deviceUid','expiresAt'])",
+            "deviceUid": {
+              ".validate": "newData.isString() && newData.val() === auth.uid"
+            },
+            "expiresAt": {
+              ".validate": "newData.isNumber() && newData.val() > now && newData.val() <= now + 900000"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "devices": {
+          "$device": {
+            "meta": {
+              ".read": "auth != null && (auth.uid === $device || (data.child('ownerUid').val() === auth.uid && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email))))",
+              ".write": "auth != null && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email)) && newData.child('ownerUid').val() === auth.uid && ((data.exists() && data.child('ownerUid').val() === auth.uid) || (!data.exists() && root.child('nokaController/v1/pairingCodes').child(newData.child('pairingCode').val()).child('deviceUid').val() === $device && root.child('nokaController/v1/pairingCodes').child(newData.child('pairingCode').val()).child('expiresAt').val() > now))",
+              ".validate": "newData.hasChildren(['ownerUid','name','pairedAt','pairingCode'])",
+              "ownerUid": {
+                ".validate": "newData.isString()"
+              },
+              "name": {
+                ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 60"
+              },
+              "pairedAt": {
+                ".validate": "newData.isNumber()"
+              },
+              "pairingCode": {
+                ".validate": "newData.isString() && newData.val().matches(/^[a-f0-9]{32}$/)"
+              },
+              "$other": {
+                ".validate": false
+              }
+            },
+            "vault": {
+              ".read": "auth != null && (auth.uid === $device || (root.child('nokaController/v1/devices').child($device).child('meta/ownerUid').val() === auth.uid && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email))))",
+              ".write": "auth != null && root.child('nokaController/v1/devices').child($device).child('meta/ownerUid').val() === auth.uid && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email))",
+              ".validate": "newData.hasChildren(['sealed','updatedAt']) && newData.child('updatedAt').isNumber()",
+              "sealed": {
+                ".validate": "newData.hasChildren(['key','iv','data'])",
+                "key": {
+                  ".validate": "newData.isString() && newData.val().length <= 1024"
+                },
+                "iv": {
+                  ".validate": "newData.isString() && newData.val().length <= 32"
+                },
+                "data": {
+                  ".validate": "newData.isString() && newData.val().length <= 180000"
+                },
+                "$other": {
+                  ".validate": false
+                }
+              },
+              "updatedAt": {
+                ".validate": "newData.isNumber()"
+              },
+              "$other": {
+                ".validate": false
+              }
+            },
+            "telemetry": {
+              ".read": "auth != null && (auth.uid === $device || (root.child('nokaController/v1/devices').child($device).child('meta/ownerUid').val() === auth.uid && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email))))",
+              ".write": "auth != null && auth.uid === $device && root.child('nokaController/v1/devices').child($device).child('meta/ownerUid').exists()",
+              ".validate": "newData.hasChildren(['lastSeen','model','android','watch']) && newData.child('lastSeen').isNumber() && newData.child('watch').isBoolean()"
+            },
+            "inbox": {
+              ".read": "auth != null && (auth.uid === $device || (root.child('nokaController/v1/devices').child($device).child('meta/ownerUid').val() === auth.uid && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email))))",
+              "$command": {
+                ".write": "auth != null && ((auth.uid === $device && !newData.exists()) || (root.child('nokaController/v1/devices').child($device).child('meta/ownerUid').val() === auth.uid && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email)) && (!data.exists() || !newData.exists())))",
+                ".validate": "newData.hasChildren(['id','action','createdAt','expiresAt']) && newData.child('id').val() === $command && newData.child('expiresAt').val() > now && newData.child('expiresAt').val() <= now + 180000 && newData.child('action').val().matches(/^(scan|open_all|status|set_watch|profile|open|close|grid|enable_freeform|restore_windowing|set_accounts|login_all)$/)",
+                "id": {
+                  ".validate": "newData.isString()"
+                },
+                "action": {
+                  ".validate": "newData.isString()"
+                },
+                "createdAt": {
+                  ".validate": "newData.isNumber()"
+                },
+                "expiresAt": {
+                  ".validate": "newData.isNumber()"
+                },
+                "package": {
+                  ".validate": "newData.isString() && newData.val().matches(/^free[.]noka[A-Za-z0-9_.]*$/)"
+                },
+                "enabled": {
+                  ".validate": "newData.isBoolean()"
+                },
+                "rows": {
+                  ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 6"
+                },
+                "cols": {
+                  ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 6"
+                },
+                "gap": {
+                  ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 40"
+                },
+                "top": {
+                  ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 250"
+                },
+                "bottom": {
+                  ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 250"
+                },
+                "profile": {
+                  ".validate": "newData.hasChildren(['package','label','username','slot','enabled']) && newData.child('package').isString() && newData.child('package').val().matches(/^free[.]noka[A-Za-z0-9_.]*$/) && newData.child('slot').isNumber() && newData.child('slot').val() >= 1 && newData.child('slot').val() <= 36 && newData.child('enabled').isBoolean()"
+                },
+                "sealed": {
+                  ".validate": "newData.hasChildren(['key','iv','data'])",
+                  "key": {
+                    ".validate": "newData.isString() && newData.val().length <= 1024"
+                  },
+                  "iv": {
+                    ".validate": "newData.isString() && newData.val().length <= 32"
+                  },
+                  "data": {
+                    ".validate": "newData.isString() && newData.val().length <= 180000"
+                  },
+                  "$other": {
+                    ".validate": false
+                  }
+                },
+                "$other": {
+                  ".validate": false
+                }
+              }
+            },
+            "results": {
+              ".indexOn": [
+                "createdAt"
+              ],
+              ".read": "auth != null && (auth.uid === $device || (root.child('nokaController/v1/devices').child($device).child('meta/ownerUid').val() === auth.uid && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email))))",
+              "$command": {
+                ".write": "auth != null && auth.uid === $device && (root.child('nokaController/v1/devices').child($device).child('inbox').child($command).exists() || data.exists())",
+                ".validate": "newData.hasChildren(['id','action','status','createdAt']) && newData.child('id').val() === $command && (newData.child('status').val() === 'running' || newData.child('status').val() === 'succeeded' || newData.child('status').val() === 'failed')"
+              }
+            }
+          }
+        },
+        "ownerEmail": {
+          ".read": "auth != null && auth.token.email_verified === true && data.val() === auth.token.email"
+        }
+      }
+    }
+  }
+}
