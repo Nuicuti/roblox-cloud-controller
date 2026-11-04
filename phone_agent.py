@@ -20,7 +20,7 @@ SCREEN_RAW = "/sdcard/Download/screen_temp.png"
 
 DEFAULT_CONFIG = {
     # Dán URL Firebase Realtime Database của bạn vào đây
-    "firebase_url": "https://your-project-default-rtdb.firebaseio.com",
+    "firebase_url": "https://roblox-cloud-farm-default-rtdb.firebaseio.com",
     "place_id": "1730877806",
     "job_id": "",
     "tabs": [

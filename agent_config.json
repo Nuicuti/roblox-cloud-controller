@@ -1,0 +1,23 @@
+{
+    "firebase_url": "https://roblox-cloud-farm-default-rtdb.firebaseio.com",
+    "place_id": "1730877806",
+    "job_id": "",
+    "tabs": [
+        {
+            "name": "Noka 1",
+            "package": "free.nokaA"
+        },
+        {
+            "name": "Noka 2",
+            "package": "free.nokaB"
+        },
+        {
+            "name": "Noka 3",
+            "package": "free.nokaC"
+        },
+        {
+            "name": "Noka 4",
+            "package": "free.nokaD"
+        }
+    ]
+}
