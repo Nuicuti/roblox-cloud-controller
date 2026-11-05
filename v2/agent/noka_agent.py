@@ -596,11 +596,18 @@ def run():
     import fcntl
     PRIVATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(PRIVATE, 0o700)
-    lock = (PRIVATE/'agent.lock').open('a')
+    lock = (PRIVATE/'agent.lock').open('a+')
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock.seek(0)
+        lock.truncate()
+        lock.write(str(os.getpid()) + '\n')
+        lock.flush()
     except BlockingIOError:
-        raise AgentError('Agent đã chạy trên máy này.') from None
+        lock.seek(0)
+        existing_pid = lock.read().strip()
+        msg = f'Agent đã chạy trên máy này (PID {existing_pid}).' if existing_pid else 'Agent đã chạy trên máy này.'
+        raise AgentError(msg + ' Dùng "killall -9 python" để dừng trước khi chạy lại.') from None
     handler = RotatingFileHandler(PRIVATE/'agent.log', maxBytes=300000, backupCount=2, encoding='utf-8')
     LOG.addHandler(handler)
     LOG.setLevel(logging.INFO)
