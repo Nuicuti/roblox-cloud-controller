@@ -49,6 +49,7 @@ curl -sL "$REPO_RAW/noka_agent.py" -o "$TARGET_DIR/noka_agent.py"
 curl -sL "$REPO_RAW/noka_login.py" -o "$TARGET_DIR/noka_login.py"
 curl -sL "$REPO_RAW/cookie_helper.py" -o "$TARGET_DIR/cookie_helper.py"
 curl -sL "$REPO_RAW/start-agent.sh" -o "$TARGET_DIR/start-agent.sh"
+curl -sL "$REPO_RAW/update.sh" -o "$TARGET_DIR/update.sh"
 chmod +x "$TARGET_DIR"/*.py "$TARGET_DIR"/*.sh
 
 # 6. Chạy setup tự động với thông tin project

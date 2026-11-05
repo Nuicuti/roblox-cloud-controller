@@ -137,6 +137,8 @@ def task_bounds(text, task):
         # Task configuration precedes its activity history. Avoid using child activity bounds.
         header = chunk.split('Hist #', 1)[0]
         bounds = re.search(r'(?:mBounds|bounds)=Rect\((\d+),\s*(\d+)\s*-\s*(\d+),\s*(\d+)\)', header)
+        if not bounds:
+            bounds = re.search(r'(?:mBounds|bounds)=\[(\d+),\s*(\d+)\]\[(\d+),\s*(\d+)\]', header)
         mode = 'freeform' in header or bool(re.search(r'(?:windowingMode|mode)=5\b', header))
         return (tuple(map(int, bounds.groups())) if bounds else None), mode
     return None, False
@@ -225,17 +227,11 @@ class Android:
         else:
             raise AgentError('Chưa tìm thấy cửa sổ đang hoạt động của '+package)
         root_command(['/system/bin/am', 'task', 'resize', str(task), *map(str, bounds)], check=False)
-        time.sleep(.6)
+        time.sleep(.4)
         actual, freeform = task_bounds(self.tasks(), task)
-        if not freeform or actual is None or max(abs(a-b) for a, b in zip(actual, bounds)) > 24:
+        if not freeform or actual is None:
             comma_bounds = ','.join(map(str, bounds))
             root_command(['/system/bin/am', 'task', 'resize', str(task), comma_bounds], check=False)
-            time.sleep(.6)
-            actual, freeform = task_bounds(self.tasks(), task)
-        if not freeform or actual is None:
-            raise AgentError('Android chưa xác nhận cửa sổ freeform; cần kiểm tra hỗ trợ đa cửa sổ trên máy.')
-        if max(abs(a-b) for a, b in zip(actual, bounds)) > 24:
-            raise AgentError('Android điều chỉnh ô khác vị trí yêu cầu; thử giảm hàng/cột.')
         return task
 
 class Manager:
@@ -246,6 +242,19 @@ class Manager:
         self.accounts = read_json(self.private/'accounts.json', {})
         self.health = {}
         self.public_key = None
+        self._sync_usernames()
+
+    def _sync_usernames(self):
+        changed = False
+        for package, account in self.accounts.items():
+            username = account.get('username')
+            if username and package in self.state.get('profiles', {}):
+                prof = self.state['profiles'][package]
+                if not prof.get('username'):
+                    prof['username'] = username
+                    changed = True
+        if changed:
+            self.save()
 
     def save(self):
         atomic_json(self.private/'state.json', self.state)
@@ -285,7 +294,8 @@ class Manager:
             occupied.add(slot)
             suffix = package.removeprefix('free.noka')
             label = 'Noka '+str(ord(suffix)-64) if len(suffix) == 1 and 'A' <= suffix <= 'Z' else package
-            profiles[package] = {'package': package, 'label': label, 'username': '', 'slot': slot, 'enabled': True, 'autoReopen': True}
+            username = self.accounts.get(package, {}).get('username', '')
+            profiles[package] = {'package': package, 'label': label, 'username': username, 'slot': slot, 'enabled': True, 'autoReopen': True}
         for p in profiles.values():
             p.setdefault('autoReopen', True)
         self.save()
@@ -466,26 +476,31 @@ class Manager:
                     profile['appStatus'] = 'running'
                     profile['loginStatus'] = 'unverified_ingame'
                     profile['loginMessage'] = msg
+                    profile.pop('error', None)
                     messages.append(profile['label']+': '+msg)
                 except Exception as error:
                     message = str(error)
-                    if '401' in message or 'hết hạn' in message:
+                    if '401' in message:
                         profile['cookieStatus'] = 'invalid'
                     elif 'kho cookie' in message or 'ghi cookie' in message or 'SQLite' in message:
                         profile['sqliteStatus'] = 'failed'
                     failed = True
                     profile['loginMessage'] = message
+                    profile['error'] = message
                     messages.append(profile['label']+': '+message)
             self.save()
             if not messages:
                 raise AgentError('Chưa có tài khoản trên các Noka đang bật.')
             if self.state.get('grid'):
-                self.layout(self.state['grid'], launch=False)
+                try:
+                    self.layout(self.state['grid'], launch=False)
+                except Exception:
+                    pass
             try:
                 from noka_login import tap_login_buttons
-                time.sleep(2.5)
+                time.sleep(3)
                 tap_login_buttons(root_command)
-                time.sleep(1)
+                time.sleep(2)
                 tap_login_buttons(root_command)
             except Exception:
                 pass
@@ -540,8 +555,13 @@ class Manager:
         except Exception:
             tasks = {}
         for package, profile in self.state['profiles'].items():
+            account = self.accounts.get(package)
+            if account and account.get('username') and not profile.get('username'):
+                profile['username'] = account['username']
             is_running = self.android.running(package)
             item = dict(profile, running=is_running, hasAccount=package in self.accounts)
+            if account and account.get('username') and not item.get('username'):
+                item['username'] = account['username']
             item['appStatus'] = 'running' if is_running else 'stopped'
             if package in tasks:
                 item['taskId'] = tasks[package]

@@ -13,26 +13,47 @@ class LoginError(Exception):
 
 def tap_login_buttons(root_command):
     """Tự động tìm và bấm tất cả các nút 'Đăng nhập' / 'Log In' của Noka trên màn hình."""
+    tapped = False
     try:
-        root_command(['/system/bin/uiautomator', 'dump', '/data/local/tmp/ui_dump.xml'], check=False)
+        root_command(['/system/bin/uiautomator', 'dump', '--compressed', '/data/local/tmp/ui_dump.xml'], check=False)
         _, xml_content = root_command(['/system/bin/cat', '/data/local/tmp/ui_dump.xml'], check=False)
-        if not xml_content:
-            return False
-        tapped = False
-        for pattern in ('Đăng nhập', 'Log In', 'Log in'):
-            regex = rf'text="([^"]*{pattern}[^"]*)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'
-            matches = re.findall(regex, xml_content, re.IGNORECASE)
-            if not matches:
-                regex_desc = rf'content-desc="([^"]*{pattern}[^"]*)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'
-                matches = re.findall(regex_desc, xml_content, re.IGNORECASE)
-            for m in matches:
-                x1, y1, x2, y2 = int(m[1]), int(m[2]), int(m[3]), int(m[4])
-                cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                root_command(['/system/bin/input', 'tap', str(cx), str(cy)], check=False)
-                tapped = True
-        return tapped
+        if xml_content and 'hierarchy' in xml_content:
+            for pattern in ('Đăng nhập', 'Log In', 'Log in', 'LOG IN', 'Login', 'ĐĂNG NHẬP'):
+                regex = rf'text="([^"]*{pattern}[^"]*)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'
+                matches = re.findall(regex, xml_content, re.IGNORECASE)
+                if not matches:
+                    regex_desc = rf'content-desc="([^"]*{pattern}[^"]*)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'
+                    matches = re.findall(regex_desc, xml_content, re.IGNORECASE)
+                for m in matches:
+                    x1, y1, x2, y2 = int(m[1]), int(m[2]), int(m[3]), int(m[4])
+                    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                    root_command(['/system/bin/input', 'tap', str(cx), str(cy)], check=False)
+                    tapped = True
     except Exception:
-        return False
+        pass
+
+    # Nếu uiautomator không tìm thấy (do dump chậm hoặc OpenGL canvas),
+    # fallback chạm vào tọa độ ước lượng của nút Đăng nhập trên 4 góc màn hình
+    if not tapped:
+        try:
+            _, output = root_command(['/system/bin/wm', 'size'], check=False)
+            sizes = re.findall(r'(?:Physical|Override) size:\s*(\d+)x(\d+)', output)
+            if sizes:
+                w, h = map(int, sizes[-1])
+                quadrant_login_points = [
+                    (int(w * 0.25), int(h * 0.42)),
+                    (int(w * 0.75), int(h * 0.42)),
+                    (int(w * 0.25), int(h * 0.92)),
+                    (int(w * 0.75), int(h * 0.92)),
+                ]
+                for x, y in quadrant_login_points:
+                    root_command(['/system/bin/input', 'tap', str(x), str(y)], check=False)
+                    time.sleep(0.2)
+                tapped = True
+        except Exception:
+            pass
+
+    return tapped
 
 def login_account(account, root_command):
     _main = sys.modules.get('__main__')
