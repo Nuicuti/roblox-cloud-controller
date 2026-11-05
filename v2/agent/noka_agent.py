@@ -452,11 +452,11 @@ class Manager:
                     profile['sqliteStatus'] = 'written'
                     profile['appStatus'] = 'running'
                     profile['loginStatus'] = 'unverified_ingame'
-                except AgentError as error:
+                except Exception as error:
                     message = str(error)
-                    if 'Roblox không chấp nhận cookie' in message:
+                    if 'Roblox' in message or 'cookie' in message.lower():
                         profile['cookieStatus'] = 'invalid'
-                    elif 'kho cookie' in message or 'ghi cookie' in message:
+                    elif 'kho cookie' in message or 'ghi cookie' in message or 'SQLite' in message:
                         profile['sqliteStatus'] = 'failed'
                     failed = True
                 profile['loginMessage'] = message
@@ -559,7 +559,9 @@ def process_command(firebase, manager, command, journal):
                 message = manager.execute(command)
                 result = dict(result, status='succeeded', message=message[:3000], finishedAt=int(time.time()*1000))
             except Exception as error:
-                message = str(error) if isinstance(error, AgentError) else 'Không thực hiện được lệnh; kiểm tra nhật ký máy.'
+                import traceback
+                LOG.error('Command %s error: %s\n%s', identifier, error, traceback.format_exc())
+                message = str(error) or type(error).__name__
                 result = dict(result, status='failed', message=message[:3000], finishedAt=int(time.time()*1000))
     journal[identifier] = result
     # Bound the local replay journal. Server command TTL still blocks older commands.
