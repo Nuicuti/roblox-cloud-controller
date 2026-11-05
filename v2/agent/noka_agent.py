@@ -407,6 +407,12 @@ class Manager:
             for package, profile in self.state['profiles'].items():
                 if profile['enabled']:
                     self.open_profile(package)
+            try:
+                from noka_login import tap_login_buttons
+                time.sleep(2)
+                tap_login_buttons(root_command)
+            except Exception:
+                pass
             return 'Đã mở các bản Noka đang bật quản lý.'
         if action == 'grid':
             settings = {k: command[k] for k in ('rows', 'cols', 'gap', 'top', 'bottom')}
@@ -460,6 +466,14 @@ class Manager:
                 raise AgentError('Chưa có tài khoản trên các Noka đang bật.')
             if self.state.get('grid'):
                 self.layout(self.state['grid'], launch=False)
+            try:
+                from noka_login import tap_login_buttons
+                time.sleep(2.5)
+                tap_login_buttons(root_command)
+                time.sleep(1)
+                tap_login_buttons(root_command)
+            except Exception:
+                pass
             if failed:
                 raise AgentError('; '.join(messages))
             return '; '.join(messages)

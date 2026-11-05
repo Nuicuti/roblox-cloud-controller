@@ -41,12 +41,30 @@ def write_cookie(package, cookie, data_root=Path('/data/data')):
         connection.execute("DELETE FROM cookies WHERE host_key = ? AND name = ?", ('.roblox.com', '.ROBLOSECURITY'))
         connection.execute('INSERT INTO cookies ('+','.join('"'+name+'"' for name in use)+') VALUES ('+','.join('?' for _ in use)+')', [fields[name] for name in use])
         connection.commit()
-        connection.execute('PRAGMA wal_checkpoint(FULL)').fetchall()
+        try:
+            connection.execute('PRAGMA wal_checkpoint(FULL)').fetchall()
+            connection.execute('PRAGMA journal_mode=DELETE').fetchall()
+        except Exception:
+            pass
         saved = connection.execute('SELECT value FROM cookies WHERE host_key=? AND name=?', ('.roblox.com', '.ROBLOSECURITY')).fetchone()
         if not saved or saved[0] != cookie:
             return {'ok': False, 'message': 'Đọc lại cookie không khớp.'}
+    for ext in ('-wal', '-shm', '-journal'):
+        f = path.with_name(path.name + ext)
+        if f.is_file():
+            try:
+                f.unlink()
+            except Exception:
+                pass
+    shared_prefs = app/'shared_prefs'
+    if shared_prefs.is_dir():
+        for p in shared_prefs.glob('RBX_LOGIN*'):
+            try:
+                p.unlink()
+            except Exception:
+                pass
     os.chown(path, owner.st_uid, owner.st_gid)
-    os.chmod(path, owner.st_mode & 0o777)
+    os.chmod(path, 0o660)
     return {'ok': True}
 
 if __name__ == '__main__':
