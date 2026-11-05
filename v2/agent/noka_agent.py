@@ -96,8 +96,11 @@ class Firebase:
         self.authenticate()
         return self.request(f'devices/{self.uid}/{suffix}', method, payload)
 
+SU_BIN = next((p for p in ['/system/xbin/su', '/system/bin/su', '/sbin/su', 'su'] if os.path.exists(p)), 'su')
+
 def root_command(args, *, stdin=None, check=True):
-    result = subprocess.run(['su', '-c', shlex.join([str(a) for a in args])], input=stdin,
+    cmd = [SU_BIN, '-c', shlex.join([str(a) for a in args])]
+    result = subprocess.run(cmd, input=stdin,
                             capture_output=True, text=True, timeout=30)
     output = (result.stdout+'\n'+result.stderr).strip()
     failed = result.returncode != 0 or bool(re.search(r'(?m)^(Error:|Exception |java\.|SecurityException)', output))
@@ -148,7 +151,9 @@ def grid_bounds(width, height, rows, cols, gap, top, bottom):
 
 class Android:
     def packages(self):
-        _, out = root_command(['/system/bin/pm', 'list', 'packages', '--user', '0'])
+        code, out = root_command(['/system/bin/pm', 'list', 'packages', '--user', '0'], check=False)
+        if code != 0 or not out:
+            _, out = root_command(['/system/bin/pm', 'list', 'packages'], check=False)
         return sorted({line[8:] for line in out.splitlines() if line.startswith('package:') and PACKAGE.fullmatch(line[8:])})
 
     def running(self, package):
@@ -158,7 +163,7 @@ class Android:
         return code == 0 and bool(re.fullmatch(r'[\d\s]+', output))
 
     def tasks(self):
-        return root_command(['/system/bin/dumpsys', 'activity', 'activities'])[1]
+        return root_command(['/system/bin/dumpsys', 'activity', 'activities'], check=False)[1]
 
     def size(self):
         _, output = root_command(['/system/bin/wm', 'size'])
@@ -191,11 +196,14 @@ class Android:
         root_command(['/system/bin/am', 'force-stop', '--user', '0', package])
 
     def freeform(self):
-        _, features = root_command(['/system/bin/pm', 'list', 'features'])
-        _, setting = root_command(['/system/bin/settings', 'get', 'global', 'enable_freeform_support'])
-        _, help_text = root_command(['/system/bin/am', 'help'])
-        return (('android.software.freeform_window_management' in features or setting.strip() == '1')
-                and '--windowingMode' in help_text and 'resize <TASK_ID>' in help_text)
+        try:
+            _, features = root_command(['/system/bin/pm', 'list', 'features'], check=False)
+            _, setting = root_command(['/system/bin/settings', 'get', 'global', 'enable_freeform_support'], check=False)
+            _, help_text = root_command(['/system/bin/am', 'help'], check=False)
+            return (('android.software.freeform_window_management' in features or setting.strip() == '1')
+                    and '--windowingMode' in help_text and 'resize <TASK_ID>' in help_text)
+        except Exception:
+            return False
 
     def resize(self, package, bounds, launch=True):
         if launch:
@@ -498,7 +506,10 @@ class Manager:
 
     def telemetry(self):
         profiles = {}
-        tasks = parse_tasks(self.android.tasks())
+        try:
+            tasks = parse_tasks(self.android.tasks())
+        except Exception:
+            tasks = {}
         for package, profile in self.state['profiles'].items():
             is_running = self.android.running(package)
             item = dict(profile, running=is_running, hasAccount=package in self.accounts)
@@ -507,10 +518,12 @@ class Manager:
                 item['taskId'] = tasks[package]
             # RTDB keys cannot contain periods; the package stays as a string field.
             profiles[hashlib.sha256(package.encode()).hexdigest()[:16]] = item
-        return {'lastSeen': {'.sv': 'timestamp'}, 'model': root_command(['/system/bin/getprop', 'ro.product.model'])[1],
-                'android': root_command(['/system/bin/getprop', 'ro.build.version.release'])[1],
+        _, model = root_command(['/system/bin/getprop', 'ro.product.model'], check=False)
+        _, android = root_command(['/system/bin/getprop', 'ro.build.version.release'], check=False)
+        return {'lastSeen': int(time.time()*1000), 'model': model.strip() or 'Redfinger Device',
+                'android': android.strip() or 'Android',
                 'watch': self.state['watch'], 'profiles': profiles, 'grid': self.state.get('grid'),
-                'freeform': self.android.freeform(), 'publicKey': self.public_key}
+                'freeform': bool(self.android.freeform()), 'publicKey': self.public_key}
 
 def process_command(firebase, manager, command, journal):
     identifier = command.get('id', '')
@@ -591,7 +604,10 @@ def run():
     handler = RotatingFileHandler(PRIVATE/'agent.log', maxBytes=300000, backupCount=2, encoding='utf-8')
     LOG.addHandler(handler)
     LOG.setLevel(logging.INFO)
-    if root_command(['/system/bin/id', '-u'])[1] != '0':
+    code, root_id = root_command(['/system/bin/id', '-u'], check=False)
+    if code != 0 or root_id.strip() != '0':
+        print('[!] LỖI: Termux chưa được cấp quyền root (SuperUser)!', file=sys.stderr)
+        print('👉 Hãy gõ "su" trong Termux và chọn "Cho phép" (Grant / Always allow) trên màn hình Redfinger.', file=sys.stderr)
         raise AgentError('Cần cấp root cho Termux.')
     firebase = Firebase()
     if not firebase.config:
@@ -635,7 +651,8 @@ def run():
             time.sleep(3)
         except (AgentError, subprocess.TimeoutExpired, OSError) as error:
             # Watchdog still operates locally when Firebase is temporarily offline.
-            LOG.info('Connection/device error: %s', type(error).__name__)
+            LOG.warning('Connection/device error: %s: %s', type(error).__name__, str(error))
+            print(f'[!] Cảnh báo vòng lặp agent: {type(error).__name__}: {error}', file=sys.stderr)
             try:
                 manager.watchdog()
             except Exception:
