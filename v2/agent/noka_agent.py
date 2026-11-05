@@ -31,13 +31,21 @@ class AgentError(Exception):
 
 def atomic_json(path, value):
     path = Path(path)
-    temporary = path.with_suffix(path.suffix + '.tmp')
-    with temporary.open('w', encoding='utf-8') as stream:
-        os.chmod(temporary, 0o600)
-        json.dump(value, stream, ensure_ascii=False)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_name(f'{path.name}.tmp.{os.getpid()}.{time.time_ns()}')
+    try:
+        with temporary.open('w', encoding='utf-8') as stream:
+            os.chmod(temporary, 0o600)
+            json.dump(value, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            try:
+                temporary.unlink()
+            except Exception:
+                pass
 
 def read_json(path, default):
     path = Path(path)
