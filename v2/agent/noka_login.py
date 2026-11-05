@@ -77,11 +77,13 @@ def login_account(account, root_command):
     package = account['package']
     root_command(['/system/bin/am', 'force-stop', '--user', '0', package])
 
-    # 3. Ghi cookie an toàn qua file tạm
-    payload_file = Path('/data/local/tmp') / f'noka_ck_{package}.json'
+    # 3. Ghi cookie an toàn qua file tạm nằm trong thư mục riêng của Termux (tránh lỗi Permission denied ở /data/local/tmp)
+    private_dir = Path('/data/data/com.termux/files/home/.noka-controller')
+    private_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    payload_file = private_dir / f'noka_ck_{package}.json'
     try:
         payload_file.write_text(json.dumps({'package': package, 'cookie': cookie}), encoding='utf-8')
-        os.chmod(payload_file, 0o600)
+        os.chmod(payload_file, 0o644)
         helper = str(Path(__file__).with_name('cookie_helper.py').resolve())
         PREFIX = '/data/data/com.termux/files/usr'
         code, output = root_command(['/system/bin/env', f'LD_LIBRARY_PATH={PREFIX}/lib',
