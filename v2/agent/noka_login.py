@@ -43,24 +43,41 @@ def login_account(account, root_command):
         cookie = cookie[len('.ROBLOSECURITY='):]
     if '\r' in cookie or '\n' in cookie:
         raise AgentErrorClass('Cookie chứa ký tự xuống dòng không hợp lệ.')
-    request = urllib.request.Request('https://users.roblox.com/v1/users/authenticated',
-        headers={'Cookie': '.ROBLOSECURITY='+cookie, 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+
+    # 1. Thử xác thực với Roblox API (nếu mạng hoặc Cloudflare chặn 403 trên IP Redfinger, không chặn nạp SQLite)
+    cookie_status = 'unverified'
+    actual_user = account.get('username', '')
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
+        url = 'https://users.roblox.com/v1/users/authenticated'
+        headers = {
+            'Cookie': '.ROBLOSECURITY=' + cookie,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Origin': 'https://www.roblox.com',
+            'Referer': 'https://www.roblox.com/'
+        }
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=8) as response:
             identity = json.load(response)
+            if identity.get('name'):
+                actual_user = identity['name']
+                account['username'] = actual_user
+                cookie_status = 'valid'
     except urllib.error.HTTPError as http_err:
-        raise AgentErrorClass(f'Roblox từ chối cookie (HTTP {http_err.code}); cookie có thể đã hết hạn hoặc không hợp lệ.') from None
-    except (urllib.error.URLError, TimeoutError) as net_err:
-        raise AgentErrorClass(f'Lỗi kết nối kiểm tra cookie với Roblox: {net_err}') from None
+        if http_err.code == 401:
+            cookie_status = 'invalid'
+            raise AgentErrorClass('Roblox xác nhận cookie đã hết hạn hoặc không hợp lệ (HTTP 401).') from None
+        # HTTP 403 do Cloudflare WAF chặn IP Redfinger -> cho phép nạp trực tiếp vào SQLite app
+        cookie_status = 'unverified'
+    except Exception:
+        cookie_status = 'unverified'
 
-    actual_user = identity.get('name', '')
-    if actual_user:
-        account['username'] = actual_user
-
+    # 2. Tắt app trước khi ghi SQLite
     package = account['package']
     root_command(['/system/bin/am', 'force-stop', '--user', '0', package])
 
-    # Ghi cookie an toàn qua file tạm /data/local/tmp (hoàn toàn tránh được lỗi nuốt stdin của su)
+    # 3. Ghi cookie an toàn qua file tạm
     payload_file = Path('/data/local/tmp') / f'noka_ck_{package}.json'
     try:
         payload_file.write_text(json.dumps({'package': package, 'cookie': cookie}), encoding='utf-8')
@@ -78,7 +95,6 @@ def login_account(account, root_command):
                 pass
 
     try:
-        # Tìm dòng JSON cuối cùng trong output
         lines = [line.strip() for line in output.splitlines() if line.strip()]
         result = json.loads(lines[-1]) if lines else {}
     except (ValueError, IndexError):
@@ -87,10 +103,16 @@ def login_account(account, root_command):
     if not result.get('ok'):
         raise AgentErrorClass(result.get('message', 'Không ghi được cookie vào SQLite.'))
 
+    # 4. Mở Noka
     _, output = root_command(['/system/bin/cmd', 'package', 'resolve-activity', '--brief', '--user', '0',
         '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER', '-p', package])
     component = next((line.strip() for line in reversed(output.splitlines()) if line.strip().startswith(package+'/')), None)
     if not component:
         raise AgentErrorClass('Đã nạp cookie nhưng chưa tìm thấy màn hình khởi động của ' + package)
     root_command(['/system/bin/am', 'start', '-W', '--user', '0', '-n', component])
-    return f'Nạp thành công ({actual_user or "Roblox"})'
+
+    return {
+        'status': 'ok',
+        'cookieStatus': cookie_status,
+        'message': f'Đã nạp cookie vào SQLite ({actual_user or "Roblox"}) và mở ứng dụng.'
+    }

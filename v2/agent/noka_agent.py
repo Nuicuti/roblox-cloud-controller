@@ -447,20 +447,27 @@ class Manager:
                 if not account or not profile['enabled']:
                     continue
                 try:
-                    message = login_account(account, root_command)
-                    profile['cookieStatus'] = 'valid'
+                    res = login_account(account, root_command)
+                    if isinstance(res, dict):
+                        profile['cookieStatus'] = res.get('cookieStatus', 'unverified')
+                        msg = res.get('message', 'Đã nạp cookie vào SQLite.')
+                    else:
+                        profile['cookieStatus'] = 'valid'
+                        msg = str(res)
                     profile['sqliteStatus'] = 'written'
                     profile['appStatus'] = 'running'
                     profile['loginStatus'] = 'unverified_ingame'
+                    profile['loginMessage'] = msg
+                    messages.append(profile['label']+': '+msg)
                 except Exception as error:
                     message = str(error)
-                    if 'Roblox' in message or 'cookie' in message.lower():
+                    if '401' in message or 'hết hạn' in message:
                         profile['cookieStatus'] = 'invalid'
                     elif 'kho cookie' in message or 'ghi cookie' in message or 'SQLite' in message:
                         profile['sqliteStatus'] = 'failed'
                     failed = True
-                profile['loginMessage'] = message
-                messages.append(profile['label']+': '+message)
+                    profile['loginMessage'] = message
+                    messages.append(profile['label']+': '+message)
             self.save()
             if not messages:
                 raise AgentError('Chưa có tài khoản trên các Noka đang bật.')
