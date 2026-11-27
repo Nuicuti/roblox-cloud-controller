@@ -321,13 +321,101 @@ object NokaApkInspector {
                         scanDexStrings(zip.getInputStream(entry), deadline, classes, strings)
                     }
                     apkObj.put("dexClasses", JSONArray(classes.take(90)))
-                    apkObj.put("dexStrings", JSONArray(strings.take(90)))
+                    apkObj.put("dexStrings", JSONArray(strings.take(120)))
+
+                    zip.getEntry("assets/ClientSettings/ClientAppSettings.json")?.let { csEntry ->
+                        try {
+                            val raw = zip.getInputStream(csEntry).bufferedReader().readText()
+                            val csJson = JSONObject(raw)
+                            val fpsObj = JSONObject()
+                            val it = csJson.keys()
+                            var total = 0
+                            while (it.hasNext()) {
+                                total++
+                                val k = it.next()
+                                if (k.contains("fps", ignoreCase = true) ||
+                                    k.contains("frame", ignoreCase = true) ||
+                                    k.contains("taskscheduler", ignoreCase = true) ||
+                                    k.contains("vsync", ignoreCase = true) ||
+                                    k.contains("throttle", ignoreCase = true)
+                                ) {
+                                    fpsObj.put(k, csJson.get(k))
+                                }
+                            }
+                            fpsObj.put("_totalKeys", total)
+                            apkObj.put("clientAppSettingsFps", fpsObj)
+                        } catch (_: Exception) {
+                        }
+                    }
+
+                    val nativeFpsHints = linkedSetOf<String>()
+                    val nativeDeadline = System.currentTimeMillis() + 1800L
+                    val soEntries = mutableListOf<java.util.zip.ZipEntry>()
+                    val libEnum = zip.entries()
+                    while (libEnum.hasMoreElements()) {
+                        val entry = libEnum.nextElement()
+                        val n = entry.name
+                        if (n.startsWith("lib/") && n.endsWith(".so") &&
+                            entry.size in 1L..6_000_000L &&
+                            !n.contains("roblox", ignoreCase = true) &&
+                            !n.contains("zstd", ignoreCase = true) &&
+                            !n.contains("persona", ignoreCase = true)
+                        ) {
+                            soEntries.add(entry)
+                        }
+                    }
+                    for (entry in soEntries.sortedBy { it.size }) {
+                        if (System.currentTimeMillis() > nativeDeadline || nativeFpsHints.size >= 80) break
+                        scanFpsAsciiHints(zip.getInputStream(entry), nativeDeadline, nativeFpsHints)
+                    }
+                    apkObj.put("nativeFpsHints", JSONArray(nativeFpsHints.take(80)))
                 }
             } catch (e: Exception) {
                 apkObj.put("zipErr", e.message ?: "zip error")
             }
         }
         return apkObj
+    }
+
+    private val FPS_HINT_RE = Regex(
+        """(autoexec|setfpscap|fps_?cap|max_?fps|fps_?limit|ClientAppSettings|TaskSchedulerTargetFps|/files/exe|/sdcard/|noka_?config|unlock_?fps)""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    private fun scanFpsAsciiHints(
+        rawStream: java.io.InputStream,
+        deadlineMs: Long,
+        out: MutableSet<String>,
+    ) {
+        BufferedInputStream(rawStream, 65536).use { input ->
+            val buf = ByteArray(65536)
+            val token = ByteArray(180)
+            var tLen = 0
+            var truncated = false
+            var reads = 0
+            while (true) {
+                if ((reads++ and 0x1F) == 0 && (System.currentTimeMillis() > deadlineMs || out.size >= 80)) break
+                val n = input.read(buf)
+                if (n <= 0) break
+                for (i in 0 until n) {
+                    val b = buf[i].toInt() and 0xFF
+                    if (b in 0x20..0x7E) {
+                        if (!truncated) {
+                            if (tLen < token.size) token[tLen++] = b.toByte() else truncated = true
+                        }
+                    } else {
+                        if (!truncated && tLen >= 5 && out.size < 80) {
+                            val s = String(token, 0, tLen, Charsets.US_ASCII)
+                            if (FPS_HINT_RE.containsMatchIn(s)) {
+                                out.add(s)
+                            }
+                        }
+                        tLen = 0
+                        truncated = false
+                    }
+                }
+            }
+        }
     }
 
     private fun scanDexStrings(
@@ -366,7 +454,7 @@ object NokaApkInspector {
                                 if (classes.size < 90 && isInterestingCls) {
                                     classes.add(s)
                                 }
-                            } else if (strings.size < 90 &&
+                            } else if (strings.size < 120 &&
                                 !s.contains("FloatingActionButton", ignoreCase = true) &&
                                 !s.contains("AppCompatTheme", ignoreCase = true) &&
                                 (
@@ -379,7 +467,12 @@ object NokaApkInspector {
                                         s.contains("window_left", ignoreCase = true) ||
                                         s.contains("window_top", ignoreCase = true) ||
                                         s.contains("DecorCaption", ignoreCase = true) ||
-                                        s.contains("windowingMode", ignoreCase = true)
+                                        s.contains("windowingMode", ignoreCase = true) ||
+                                        s.contains("autoexec", ignoreCase = true) ||
+                                        s.contains("setfpscap", ignoreCase = true) ||
+                                        s.contains("ClientAppSettings", ignoreCase = true) ||
+                                        s.contains("/files/exe", ignoreCase = true) ||
+                                        s.contains("fps_cap", ignoreCase = true)
                                     )
                             ) {
                                 strings.add(s)
@@ -401,6 +494,36 @@ object NokaApkInspector {
             check = false, timeoutSec = 5,
         ).output
         dataObj.put("ls", lsOut.take(2400))
+
+        val exeTree = RootShell.runRaw(
+            "/system/bin/find ${RootShell.quote("$dataDir/files/exe")} ${RootShell.quote("$dataDir/files/datastore")} ${RootShell.quote("$dataDir/files/libpack")} ${RootShell.quote("$dataDir/app_assets")} -maxdepth 4 2>/dev/null | /system/bin/head -n 140",
+            check = false, timeoutSec = 5,
+        ).output
+        dataObj.put("exeTree", exeTree.take(3200))
+
+        val sdcardTree = RootShell.runRaw(
+            "(/system/bin/ls -la /sdcard 2>/dev/null | /system/bin/head -n 45; echo '---match---'; /system/bin/find /sdcard -maxdepth 3 \\( -iname '*noka*' -o -iname '*autoexec*' -o -iname '*roblox*' -o -iname '*executor*' -o -iname '*script*' -o -iname '*fps*' \\) 2>/dev/null | /system/bin/head -n 90; echo '---ext---'; /system/bin/find ${RootShell.quote("/sdcard/Android/data/$pkg")} -maxdepth 4 2>/dev/null | /system/bin/head -n 80)",
+            check = false, timeoutSec = 6,
+        ).output
+        dataObj.put("sdcardTree", sdcardTree.take(3200))
+
+        val cfgFiles = RootShell.runRaw(
+            "/system/bin/find ${RootShell.quote("$dataDir/files/exe")} ${RootShell.quote("$dataDir/app_assets")} /sdcard -maxdepth 3 -type f \\( -iname '*.json' -o -iname '*.cfg' -o -iname '*.ini' -o -iname '*.properties' -o -iname '*fps*.txt' -o -iname '*config*.txt' -o -iname '*setting*.txt' \\) -size -16k 2>/dev/null | /system/bin/grep -iE 'noka|exe|fps|setting|config|pref|ClientAppSettings|state' | /system/bin/head -n 12",
+            check = false, timeoutSec = 5,
+        ).output.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val exeConfigs = JSONArray()
+        for (path in cfgFiles.take(8)) {
+            if (SENSITIVE_KEY_RE.containsMatchIn(path)) continue
+            val raw = RootShell.run(listOf("/system/bin/cat", path), check = false, timeoutSec = 3).output
+            val safe = raw.lines()
+                .filter { line -> !SENSITIVE_KEY_RE.containsMatchIn(line) && !line.contains("http", ignoreCase = true) }
+                .joinToString("\n")
+                .take(900)
+            if (safe.isNotBlank()) {
+                exeConfigs.put(JSONObject().put("path", path).put("body", safe))
+            }
+        }
+        dataObj.put("exeConfigs", exeConfigs)
 
         val cloneSettingsRaw = RootShell.run(listOf("/system/bin/cat", "$dataDir/files/cloneSettings.json"), check = false, timeoutSec = 4).output
         if (cloneSettingsRaw.trim().startsWith("{")) {
