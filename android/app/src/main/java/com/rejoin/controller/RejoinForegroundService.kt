@@ -86,6 +86,16 @@ class RejoinForegroundService : Service() {
             android = RootAndroidDevice(applicationContext),
             crypto = crypto,
             cookieWriter = { acc -> CookieInstaller.installCookie(applicationContext, acc) },
+            appVersionInfo = { AppUpdater.localVersionInfo(applicationContext) },
+            selfUpdater = {
+                val (msg, file) = AppUpdater.prepareUpdate(applicationContext, force = false)
+                val hook: (() -> Unit)? = if (file.exists()) {
+                    { AppUpdater.launchRootInstall(applicationContext, file, restartUi = false) }
+                } else {
+                    null
+                }
+                msg to hook
+            },
         )
         try {
             appendLog(engine.scan())

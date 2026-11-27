@@ -7,12 +7,15 @@ android {
     namespace = "com.rejoin.controller"
     compileSdk = 34
 
+    val ciVersionCode = (project.findProperty("rejoinVersionCode") as String?)?.toIntOrNull() ?: 1
+    val ciVersionName = (project.findProperty("rejoinVersionName") as String?)?.takeIf { it.isNotBlank() } ?: "2.0.0"
+
     defaultConfig {
         applicationId = "com.rejoin.controller"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "2.0.0"
+        versionCode = ciVersionCode
+        versionName = ciVersionName
     }
 
     buildTypes {

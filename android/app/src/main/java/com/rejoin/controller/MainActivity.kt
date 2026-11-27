@@ -199,6 +199,31 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Đã sao chép vào bộ nhớ tạm.", Toast.LENGTH_SHORT).show()
         }
 
+        lateinit var updateBtn: Button
+        updateBtn = btn("TỰ CẬP NHẬT APK MỚI (GIỮ GHÉP MÁY)") {
+            updateBtn.isEnabled = false
+            updateBtn.text = "ĐANG KIỂM TRA & TẢI APK..."
+            Thread {
+                try {
+                    val (msg, apkFile) = AppUpdater.prepareUpdate(this, force = false)
+                    runOnUiThread {
+                        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                        updateBtn.text = "TỰ CẬP NHẬT APK MỚI (GIỮ GHÉP MÁY)"
+                        updateBtn.isEnabled = true
+                    }
+                    if (apkFile.exists()) {
+                        AppUpdater.launchRootInstall(this, apkFile, restartUi = true)
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread {
+                        Toast.makeText(this, "Cập nhật lỗi: ${e.message}", Toast.LENGTH_LONG).show()
+                        updateBtn.text = "TỰ CẬP NHẬT APK MỚI (GIỮ GHÉP MÁY)"
+                        updateBtn.isEnabled = true
+                    }
+                }
+            }.start()
+        }
+
         val accBtn = btn("MỞ CÀI ĐẶT ACCESSIBILITY (ĐỌC UI NHANH)") {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
@@ -214,7 +239,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        root.addView(title("Rejoin Control (Root Daemon)"))
+        root.addView(title("Rejoin Control · ${AppUpdater.localVersionSummary(this)}"))
         root.addView(label("Trạng thái hệ thống"))
         root.addView(statusText)
         root.addView(toggleBtn)
@@ -223,6 +248,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(codeText)
         root.addView(pairBtn)
         root.addView(copyBtn)
+        root.addView(updateBtn)
         root.addView(label("Tối ưu chạy ngầm & đọc màn hình Disconnect/CAPTCHA"))
         root.addView(accBtn)
         root.addView(batBtn)

@@ -16,6 +16,7 @@ import {
   ChevronRight,
   CircleHelp,
   Cpu,
+  Download,
   Grid2X2,
   Layers3,
   LayoutDashboard,
@@ -68,6 +69,7 @@ const actionNames: Record<string, string> = {
   status: "Cập nhật trạng thái",
   set_accounts: "Gửi tài khoản E2EE",
   login_all: "Nạp cookie và mở",
+  self_update: "Tự cập nhật APK",
 };
 
 const healthLabels: Record<HealthState, { text: string; tone: "green" | "blue" | "yellow" | "red" | "gray" }> = {
@@ -563,12 +565,28 @@ export default function Dashboard() {
                   </h2>
                   <p>
                     {current.telemetry?.model ?? "Đang chờ agent"} <span>·</span> Android{" "}
-                    {current.telemetry?.android ?? "—"} <span>·</span> {profiles.length} clone <span>·</span> Cập nhật:{" "}
+                    {current.telemetry?.android ?? "—"}
+                    {current.telemetry?.appVersion ? (
+                      <>
+                        {" "}
+                        <span>·</span> v{current.telemetry.appVersion}
+                        {current.telemetry.buildCode ? ` (#${current.telemetry.buildCode})` : ""}
+                      </>
+                    ) : null}{" "}
+                    <span>·</span> {profiles.length} clone <span>·</span> Cập nhật:{" "}
                     {new Date(current.telemetry?.lastSeen ?? 0).toLocaleTimeString("vi-VN")}
                   </p>
                 </div>
                 <button className="secondary" disabled={blocked} onClick={() => issue({ action: "scan" })}>
                   <ScanLine size={16} /> Quét Clone
+                </button>
+                <button
+                  className="secondary"
+                  disabled={blocked}
+                  onClick={() => issue({ action: "self_update" })}
+                  title="Tự tải và cài đè APK mới nhất bằng quyền Root (không mất ghép máy)"
+                >
+                  <Download size={15} /> Cập nhật APK
                 </button>
                 <button
                   className="icon-button"

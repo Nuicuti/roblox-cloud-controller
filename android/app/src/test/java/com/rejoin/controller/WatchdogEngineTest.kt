@@ -255,4 +255,26 @@ class WatchdogEngineTest {
         assertEquals(3, engine.grid?.cols)
         assertEquals(6, fa.opened.size)
     }
+
+    @Test
+    fun `self update reports version info and triggers updater`() {
+        val dir = tempFolder.newFolder("self-update")
+        var hookRan = false
+        val engine = WatchdogEngine(
+            storageDir = dir,
+            android = FakeAndroid(),
+            crypto = CryptoStore(dir),
+            appVersionInfo = { 12L to "2.0.12" },
+            selfUpdater = {
+                "Đang cập nhật lên build #13" to { hookRan = true }
+            },
+        )
+        val telemetry = engine.buildTelemetry()
+        assertEquals("2.0.12", telemetry.getString("appVersion"))
+        assertEquals(12L, telemetry.getLong("buildCode"))
+
+        val msg = engine.execute(JSONObject().put("action", "self_update"))
+        assertTrue(msg.contains("build #13"))
+        assertFalse(hookRan) // Hook only runs after Firebase result + inbox ACK in processCommand
+    }
 }

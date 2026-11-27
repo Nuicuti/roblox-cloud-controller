@@ -27,6 +27,8 @@ class WatchdogEngine(
     private val cookieWriter: (AccountRecord) -> CookieInstaller.InstallResult = {
         throw AgentException("Chưa gắn bộ nạp cookie.")
     },
+    private val appVersionInfo: () -> Pair<Long, String> = { 1L to "2.0.0" },
+    private val selfUpdater: (() -> Pair<String, (() -> Unit)?>)? = null,
 ) {
     private val stateFile = File(storageDir, "state.json")
     private val accountsFile = File(storageDir, "accounts.json")
@@ -46,6 +48,7 @@ class WatchdogEngine(
     private var lastAnyLaunchMs: Long? = null
     private var lastAnyLaunchPkg: String? = null
     private var lastUiReadMs: Long? = null
+    private var postAckHook: (() -> Unit)? = null
 
     init {
         loadState()
@@ -469,6 +472,12 @@ class WatchdogEngine(
                 messages.joinToString("; ")
             }
             "status" -> "Đã cập nhật trạng thái."
+            "self_update" -> {
+                val updater = selfUpdater ?: throw AgentException("Thiết bị chưa hỗ trợ tự cập nhật từ xa.")
+                val (msg, hook) = updater.invoke()
+                postAckHook = hook
+                msg
+            }
             else -> throw AgentException("Lệnh không được hỗ trợ.")
         }
     }
@@ -722,10 +731,13 @@ class WatchdogEngine(
             profJson.put(ConfigLimits.sha256Prefix16(pkg), item)
         }
         val (model, androidVer) = android.deviceInfo()
+        val (buildCode, appVer) = appVersionInfo()
         return JSONObject().apply {
             put("lastSeen", System.currentTimeMillis())
             put("model", model)
             put("android", androidVer)
+            put("appVersion", appVer)
+            put("buildCode", buildCode)
             put("watch", watch)
             put("rejoinConfig", effectiveConfig().toJson())
             put("profiles", profJson)
@@ -790,5 +802,8 @@ class WatchdogEngine(
         saveJournal()
         firebase.device("results/$id", "PUT", result)
         firebase.device("inbox/$id", "DELETE")
+        val hook = postAckHook
+        postAckHook = null
+        hook?.invoke()
     }
 }

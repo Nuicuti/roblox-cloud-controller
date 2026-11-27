@@ -71,6 +71,7 @@ export const commandSchema = z.discriminatedUnion("action", [
     }).strict(),
   }).strict(),
   z.object({ action: z.literal("login_all") }).strict(),
+  z.object({ action: z.literal("self_update") }).strict(),
 ]);
 
 export type RejoinConfig = z.infer<typeof rejoinConfigSchema>;
@@ -118,6 +119,8 @@ export type Device = {
     lastSeen: number;
     model: string;
     android: string;
+    appVersion?: string;
+    buildCode?: number;
     watch: boolean;
     rejoinConfig?: RejoinConfig;
     profiles?: Record<string, Profile>;

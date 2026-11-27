@@ -31,6 +31,12 @@ jobs:
             yes | "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager --licenses || true
           fi
 
+      - name: Cache Android Debug Keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: rejoin-debug-keystore-v1
+
       - name: Setup Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -40,7 +46,7 @@ jobs:
         working-directory: android
         run: |
           set -o pipefail
-          if ! gradle testDebugUnitTest assembleDebug --no-daemon --console=plain > gradle.log 2>&1; then
+          if ! gradle testDebugUnitTest assembleDebug -PrejoinVersionCode=${{ github.run_number }} -PrejoinVersionName="2.0.${{ github.run_number }}" --no-daemon --console=plain > gradle.log 2>&1; then
             cat gradle.log
             (grep -A 6 -E "^e:|FAILURE:|What went wrong:" gradle.log || tail -n 10 gradle.log) | head -n 8 | while IFS= read -r line; do echo "::error::$line"; done
             exit 1
@@ -59,9 +65,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: Rejoin Control APK (Latest)
+          name: "Rejoin Control APK (build ${{ github.run_number }})"
           files: rejoin-control.apk
           make_latest: true
-          body: "Tải trực tiếp `rejoin-control.apk` để cài trên Redfinger (thay thế hoàn toàn Termux)."
+          body: "Tải trực tiếp `rejoin-control.apk` (build #${{ github.run_number }} · ${{ github.sha }}) — hỗ trợ tự cập nhật ngay trong app mà không mất dữ liệu ghép máy."
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
