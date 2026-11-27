@@ -713,14 +713,17 @@ class WatchdogEngine(
     fun processCommand(firebase: FirebaseRestClient, command: JSONObject) {
         val id = command.optString("id", "")
         if (!ConfigLimits.UUID_REGEX.matches(id)) throw AgentException("Mã lệnh không hợp lệ.")
-        var result = journal[id]
-        if (result != null) {
-            if (result.optString("status") == "running") {
-                result = JSONObject(result.toString()).apply {
+        val existing = journal[id]
+        var result: JSONObject
+        if (existing != null) {
+            result = if (existing.optString("status") == "running") {
+                JSONObject(existing.toString()).apply {
                     put("status", "failed")
                     put("message", "Agent đã dừng giữa lệnh; kiểm tra máy trước khi gửi lại.")
                     put("finishedAt", System.currentTimeMillis())
                 }
+            } else {
+                existing
             }
         } else {
             val action = command.optString("action", "")
