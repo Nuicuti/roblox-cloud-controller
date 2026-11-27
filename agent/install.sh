@@ -27,11 +27,20 @@ apt update -y || {
     apt update -y
 }
 
-# Upgrade OpenSSL/Python/libcurl before configuring python-cryptography so pip SSL works.
-apt install "${APT_OPTS[@]}" openssl libcurl python curl || true
+# Upgrade OpenSSL/Python/libcurl first so Python ssl & curl work cleanly.
+apt install "${APT_OPTS[@]}" openssl libcurl python python-pip curl || true
 apt full-upgrade "${APT_OPTS[@]}"
 dpkg --configure -a || true
-apt install "${APT_OPTS[@]}" python python-cryptography curl
+apt install "${APT_OPTS[@]}" python python-pip python-cryptography curl
+
+# If a prior partial install left python-cryptography without cffi, repair it now.
+if ! python -c "from cryptography.hazmat.primitives.asymmetric import rsa" 2>/dev/null; then
+    echo "[*] Đang sửa thiếu module cffi/cryptography..."
+    pip install --no-cache-dir cffi || true
+    apt install --reinstall "${APT_OPTS[@]}" python-cryptography || pip install --no-cache-dir cryptography
+fi
+
+python -c "from cryptography.hazmat.primitives.asymmetric import rsa; print('[✓] Python cryptography OK')"
 
 TARGET_DIR="$HOME/noka-controller"
 DATA_DIR="$HOME/.noka-controller"

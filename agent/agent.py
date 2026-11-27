@@ -1004,6 +1004,9 @@ if __name__ == '__main__':
             setup(args.api_key, args.database)
         else:
             run()
-    except (AgentError, ImportError, KeyboardInterrupt) as error:
-        print(str(error) if not isinstance(error, ImportError) else 'Cài gói: pkg install python-cryptography', file=sys.stderr)
+    except ImportError as error:
+        print(f'Thiếu thư viện Python ({error}). Chạy: apt install -y python-cryptography && pip install cffi', file=sys.stderr)
+        sys.exit(1)
+    except (AgentError, KeyboardInterrupt) as error:
+        print(str(error), file=sys.stderr)
         sys.exit(1)
