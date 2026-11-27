@@ -109,8 +109,12 @@ class WatchdogEngineTest {
 
         val winDump = """
             WINDOW MANAGER WINDOWS
+              Window #3 Window{1111 u0 premium.nokaA/StatusOverlay}:
+                mHasSurface=true
+                mFrames=Frames{containing=[260,611][681,635] mFrame=[260,611][681,635]}
               Window #4 Window{a1b2 u0 premium.nokaA/com.roblox.client.MainActivity}:
                 mHasSurface=true isReadyForDisplay()=true
+                mAttrs={(0,0)(fillxfill) ty=BASE_APPLICATION}
                 mFrames=Frames{containing=[4,24][427,346] parent=[4,24][427,346] display=[0,0][1280,720] mFrame=[262,161][685,483]}
                 WindowStateAnimator{ mShownPosition=(262.0, 161.0) }
         """.trimIndent()
@@ -118,6 +122,13 @@ class WatchdogEngineTest {
         assertEquals(RectBounds(262, 161, 685, 483), wf?.frame)
         assertEquals(RectBounds(4, 24, 427, 346), wf?.containing)
         assertEquals("(262.0,161.0)", wf?.shownPos)
+
+        val negStackDump = """
+            Stack id=58 bounds=[-252,-116][169,204] displayId=0 userId=0
+              taskId=62: premium.nokaA/com.roblox.client.MainActivity bounds=[-252,-116][169,204] userId=0 visible=true
+        """.trimIndent()
+        val negStacks = AndroidInspector.parseStackList(negStackDump)
+        assertEquals(RectBounds(-252, -116, 169, 204), negStacks["premium.nokaA"]?.bounds)
 
         val sfDump = """
             + Layer 0x7a (premium.nokaA/com.roblox.client.MainActivity#0)

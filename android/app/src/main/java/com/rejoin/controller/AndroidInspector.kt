@@ -57,11 +57,11 @@ object AndroidInspector {
     private val STACK_SPLIT_RE = Regex("""(?m)(?=^[ \t]*Stack\s+#\d+:)""")
     private val STACK_ID_RE = Regex("""\bStackId=(\d+)\b""")
     private val STACK_HEADER_ID_RE = Regex("""Stack\s+#(\d+):""")
-    private val BOUNDS_RECT_RE = Regex("""(?:mBounds|bounds)=Rect\((\d+),\s*(\d+)\s*-\s*(\d+),\s*(\d+)\)""")
-    private val BOUNDS_BRACKET_RE = Regex("""(?:mBounds|bounds)=\[(\d+),\s*(\d+)\]\[(\d+),\s*(\d+)\]""")
+    private val BOUNDS_RECT_RE = Regex("""(?:mBounds|bounds)=Rect\((-?\d+),\s*(-?\d+)\s*-\s*(-?\d+),\s*(-?\d+)\)""")
+    private val BOUNDS_BRACKET_RE = Regex("""(?:mBounds|bounds)=\[(-?\d+),\s*(-?\d+)\]\[(-?\d+),\s*(-?\d+)\]""")
     private val STACK_LIST_HEADER_RE = Regex("""^\s*Stack\s+id=(\d+)\b""")
     private val STACK_LIST_TASK_RE = Regex("""^\s*taskId=(\d+):\s*([A-Za-z0-9_.]+)/""")
-    private val BRACKET_PAIR_RE = Regex("""\[(\d+),\s*(\d+)\]\[(\d+),\s*(\d+)\]""")
+    private val BRACKET_PAIR_RE = Regex("""\[(-?\d+),\s*(-?\d+)\]\[(-?\d+),\s*(-?\d+)\]""")
 
     private fun parseBoundsFromText(text: String): RectBounds? {
         val rm = BOUNDS_RECT_RE.find(text)
@@ -270,16 +270,20 @@ object AndroidInspector {
         }
         val blockSplit = Regex("""(?m)(?=^[ \t]*(?:Window\s+#\d+\s+)?Window\{)""")
         val pkgRe = Regex("""\b${Regex.escape(pkg)}(?:/|\}|\s)""")
-        val frameBracketRe = Regex("""\b(?:mFrame|frame|mShownFrame|mVisibleFrame|mCompatFrame)=\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]""")
-        val frameRectRe = Regex("""\b(?:mFrame|frame|mShownFrame|mCompatFrame)=Rect\((-?\d+),\s*(-?\d+)\s*-\s*(-?\d+),\s*(-?\d+)\)""")
+        val primaryBracketRe = Regex("""\b(?:mFrame|frame|mShownFrame)=\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]""")
+        val primaryRectRe = Regex("""\b(?:mFrame|frame|mShownFrame)=Rect\((-?\d+),\s*(-?\d+)\s*-\s*(-?\d+),\s*(-?\d+)\)""")
+        val secondaryBracketRe = Regex("""\b(?:mCompatFrame|mVisibleFrame)=\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]""")
         val surfRectRe = Regex("""\brect=\((-?\d+),\s*(-?\d+),\s*(-?\d+),\s*(-?\d+)\)""")
         val containingRe = Regex("""\bcontaining=\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]""")
         val shownPosRe = Regex("""\b(?:mShownPosition|pos)=\((-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)\)""")
-        var fallback: WindowFrameInfo? = null
+
+        var best: WindowFrameInfo? = null
+        var bestScore = Long.MIN_VALUE
         for (block in blockSplit.split(windowsText)) {
             if (!pkgRe.containsMatchIn(block)) continue
             if (block.contains("mHasSurface=false") && block.contains("mViewVisibility=0x8")) continue
-            val fm = frameBracketRe.find(block) ?: frameRectRe.find(block)
+
+            val fm = primaryBracketRe.find(block) ?: primaryRectRe.find(block) ?: secondaryBracketRe.find(block)
             val frame = fm?.let {
                 RectBounds(it.groupValues[1].toInt(), it.groupValues[2].toInt(), it.groupValues[3].toInt(), it.groupValues[4].toInt())
             } ?: surfRectRe.find(block)?.let {
@@ -294,13 +298,24 @@ object AndroidInspector {
                 RectBounds(it.groupValues[1].toInt(), it.groupValues[2].toInt(), it.groupValues[3].toInt(), it.groupValues[4].toInt())
             }
             val sp = shownPosRe.find(block)?.let { "(${it.groupValues[1]},${it.groupValues[2]})" }
-            if (frame != null || containing != null || sp != null) {
-                val info = WindowFrameInfo(frame = frame, containing = containing, shownPos = sp)
-                if (block.contains("mHasSurface=true") && frame != null) return info
-                if (fallback == null) fallback = info
+            val refRect = frame ?: containing
+            if (refRect == null && sp == null) continue
+
+            var score = 0L
+            if (block.contains("BASE_APPLICATION")) score += 1_000_000L
+            if (block.contains("mHasSurface=true")) score += 200_000L
+            if (refRect != null) {
+                val rw = (refRect.right - refRect.left).coerceAtLeast(0)
+                val rh = (refRect.bottom - refRect.top).coerceAtLeast(0)
+                if (rw >= 100 && rh >= 80) score += 500_000L
+                score += (rw.toLong() * rh.toLong()) / 10L
+            }
+            if (score > bestScore) {
+                bestScore = score
+                best = WindowFrameInfo(frame = frame, containing = containing, shownPos = sp)
             }
         }
-        return fallback
+        return best
     }
 
     fun parseSurfaceLayerInfo(sfText: String?, pkg: String): String? {
@@ -855,30 +870,13 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
         fun applyOnce(rect: RectBounds, initial: TaskPlacement): Pair<TaskPlacement, Boolean> {
             val taskId = initial.taskId
             val stackId = initial.stackId ?: 0
+            val hasNegative = rect.left < 0 || rect.top < 0
             val strategies: List<Pair<String, () -> ShellResult>> = buildList {
                 add("helper" to {
                     runWindowHelper(
                         "resize", taskId.toString(),
                         rect.left.toString(), rect.top.toString(), rect.right.toString(), rect.bottom.toString(),
                         stackId.toString(),
-                    )
-                })
-                add("am-task-space" to {
-                    RootShell.run(
-                        listOf("/system/bin/am", "task", "resize", taskId.toString(), rect.left.toString(), rect.top.toString(), rect.right.toString(), rect.bottom.toString()),
-                        check = false, timeoutSec = 6,
-                    )
-                })
-                add("am-task-comma" to {
-                    RootShell.run(
-                        listOf("/system/bin/am", "task", "resize", taskId.toString(), "${rect.left},${rect.top},${rect.right},${rect.bottom}"),
-                        check = false, timeoutSec = 6,
-                    )
-                })
-                add("cmd-task-space" to {
-                    RootShell.run(
-                        listOf("/system/bin/cmd", "activity", "task", "resize", taskId.toString(), rect.left.toString(), rect.top.toString(), rect.right.toString(), rect.bottom.toString()),
-                        check = false, timeoutSec = 6,
                     )
                 })
                 if (stackId > 0) {
@@ -888,18 +886,40 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
                             rect.left.toString(), rect.top.toString(), rect.right.toString(), rect.bottom.toString(),
                         )
                     })
-                    add("am-stack-space" to {
+                }
+                if (!hasNegative) {
+                    add("am-task-space" to {
                         RootShell.run(
-                            listOf("/system/bin/am", "stack", "resize", stackId.toString(), rect.left.toString(), rect.top.toString(), rect.right.toString(), rect.bottom.toString()),
+                            listOf("/system/bin/am", "task", "resize", taskId.toString(), rect.left.toString(), rect.top.toString(), rect.right.toString(), rect.bottom.toString()),
                             check = false, timeoutSec = 6,
                         )
                     })
-                    add("am-stack-comma" to {
+                    add("am-task-comma" to {
                         RootShell.run(
-                            listOf("/system/bin/am", "stack", "resize", stackId.toString(), "${rect.left},${rect.top},${rect.right},${rect.bottom}"),
+                            listOf("/system/bin/am", "task", "resize", taskId.toString(), "${rect.left},${rect.top},${rect.right},${rect.bottom}"),
                             check = false, timeoutSec = 6,
                         )
                     })
+                    add("cmd-task-space" to {
+                        RootShell.run(
+                            listOf("/system/bin/cmd", "activity", "task", "resize", taskId.toString(), rect.left.toString(), rect.top.toString(), rect.right.toString(), rect.bottom.toString()),
+                            check = false, timeoutSec = 6,
+                        )
+                    })
+                    if (stackId > 0) {
+                        add("am-stack-space" to {
+                            RootShell.run(
+                                listOf("/system/bin/am", "stack", "resize", stackId.toString(), rect.left.toString(), rect.top.toString(), rect.right.toString(), rect.bottom.toString()),
+                                check = false, timeoutSec = 6,
+                            )
+                        })
+                        add("am-stack-comma" to {
+                            RootShell.run(
+                                listOf("/system/bin/am", "stack", "resize", stackId.toString(), "${rect.left},${rect.top},${rect.right},${rect.bottom}"),
+                                check = false, timeoutSec = 6,
+                            )
+                        })
+                    }
                 }
             }
             var latest = initial
@@ -936,10 +956,13 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
         var winDump = windows()
         var wf = AndroidInspector.parseWindowFrame(winDump, pkg)
         val initialFrame = wf?.frame
-        if (cachedCalibOffset == null && initialFrame != null) {
+        if (cachedCalibOffset == null && initialFrame != null &&
+            (initialFrame.right - initialFrame.left) >= 100 && (initialFrame.bottom - initialFrame.top) >= 80
+        ) {
+            val (dispW, dispH) = displaySize()
             val errX = initialFrame.left - bounds.left
             val errY = initialFrame.top - bounds.top
-            if (abs(errX) > 40 || abs(errY) > 40) {
+            if ((abs(errX) > 40 || abs(errY) > 40) && abs(errX) < dispW / 2 && abs(errY) < dispH / 2) {
                 val compensated = RectBounds(bounds.left - errX, bounds.top - errY, bounds.right - errX, bounds.bottom - errY)
                 applyOnce(compensated, latest)
                 Thread.sleep(200)
