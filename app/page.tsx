@@ -13,6 +13,7 @@ import {
   AlertTriangle,
   ArrowRight,
   Check,
+  ChevronDown,
   ChevronRight,
   CircleHelp,
   Cpu,
@@ -152,6 +153,8 @@ export default function Dashboard() {
   const [tab, setTab] = useState<"accounts" | "rejoin" | "activity">("accounts");
   const [rejoinDraft, setRejoinDraft] = useState<RejoinConfig>(DEFAULT_REJOIN_CONFIG);
   const [rejoinDirty, setRejoinDirty] = useState(false);
+  const [showRejoinAdvanced, setShowRejoinAdvanced] = useState(false);
+  const [showExtraBatch, setShowExtraBatch] = useState(false);
 
   const current = devices.find(d => d.id === selected) ?? devices[0];
   const profiles = Object.values(current?.telemetry?.profiles ?? {}).sort((a, b) =>
@@ -250,6 +253,46 @@ export default function Dashboard() {
     void send(command).catch(() => {});
   };
   const blocked = pending || demo || !current || !online;
+  const activePlaceId = rejoinDraft.placeId || current?.telemetry?.rejoinConfig?.placeId || "";
+
+  function parsePlaceIdInput(raw: string): string {
+    const trimmed = raw.trim();
+    const urlMatch =
+      trimmed.match(/\/games\/(\d{1,20})/i) ??
+      trimmed.match(/[?&]placeId=(\d{1,20})/i) ??
+      trimmed.match(/placeId[=:](\d{1,20})/i);
+    if (urlMatch) return urlMatch[1];
+    return trimmed.replace(/\D/g, "").slice(0, 20);
+  }
+
+  async function saveRejoinConfig(nextConfig: RejoinConfig = rejoinDraft) {
+    setRejoinDraft(nextConfig);
+    try {
+      await send({ action: "set_rejoin_config", config: nextConfig });
+      setRejoinDirty(false);
+    } catch {}
+  }
+
+  async function runOneClickRejoin() {
+    if (blocked || !profiles.length) return;
+    const saved = current?.telemetry?.rejoinConfig;
+    const nextConfig: RejoinConfig = { ...rejoinDraft, enabled: true };
+    const needsSave =
+      rejoinDirty ||
+      !saved ||
+      !saved.enabled ||
+      !current?.telemetry?.watch ||
+      saved.placeId !== nextConfig.placeId ||
+      saved.jobId !== nextConfig.jobId;
+    try {
+      if (needsSave) {
+        setRejoinDraft(nextConfig);
+        await send({ action: "set_rejoin_config", config: nextConfig });
+        setRejoinDirty(false);
+      }
+      await send({ action: "rejoin_all" });
+    } catch {}
+  }
 
   function cleanCookieValue(raw: string) {
     let cookie = raw.trim();
@@ -847,12 +890,9 @@ export default function Dashboard() {
                   ) : tab === "rejoin" ? (
                     <form
                       className="rejoin-panel"
-                      onSubmit={async event => {
+                      onSubmit={event => {
                         event.preventDefault();
-                        try {
-                          await send({ action: "set_rejoin_config", config: rejoinDraft });
-                          setRejoinDirty(false);
-                        } catch {}
+                        void runOneClickRejoin();
                       }}
                     >
                       <div className="rejoin-header">
@@ -864,7 +904,10 @@ export default function Dashboard() {
                             <h3>
                               Auto-rejoin loop <span className="status-pill blue">ALL CLONES</span>
                             </h3>
-                            <p>Cấu hình mặc định cho mọi bản clone trên máy; không dùng auto-solve CAPTCHA.</p>
+                            <p>
+                              Nhập Place ID (hoặc dán link Roblox) rồi bấm 1 nút Rejoin tất cả bên dưới; không dùng
+                              auto-solve CAPTCHA.
+                            </p>
                           </div>
                         </div>
                         <button
@@ -873,8 +916,10 @@ export default function Dashboard() {
                           aria-checked={rejoinDraft.enabled}
                           className={`switch ${rejoinDraft.enabled ? "on" : ""}`}
                           onClick={() => {
+                            const nextConfig = { ...rejoinDraft, enabled: !rejoinDraft.enabled };
                             setRejoinDirty(true);
-                            setRejoinDraft(prev => ({ ...prev, enabled: !prev.enabled }));
+                            setRejoinDraft(nextConfig);
+                            if (!blocked) void saveRejoinConfig(nextConfig);
                           }}
                         >
                           <span />
@@ -883,16 +928,16 @@ export default function Dashboard() {
 
                       <div className="rejoin-target-grid">
                         <label>
-                          Place ID (Deep link vào thẳng game)
+                          Place ID (hoặc dán link game Roblox)
                           <input
                             value={rejoinDraft.placeId}
                             pattern="\d{0,20}"
-                            placeholder="Ví dụ: 1730877806 (để trống nếu chỉ mở app)"
+                            placeholder="Ví dụ: 1730877806 hoặc dán link Roblox"
                             onChange={e => {
                               setRejoinDirty(true);
                               setRejoinDraft(prev => ({
                                 ...prev,
-                                placeId: e.target.value.replace(/\D/g, "").slice(0, 20),
+                                placeId: parsePlaceIdInput(e.target.value),
                               }));
                             }}
                           />
@@ -914,231 +959,257 @@ export default function Dashboard() {
                         </label>
                       </div>
 
-                      <div className="rejoin-sliders">
-                        <SliderField
-                          label="Check interval"
-                          unit="s"
-                          min={3}
-                          max={60}
-                          value={rejoinDraft.checkIntervalSec}
-                          hint="Chu kỳ đọc trạng thái app, cửa sổ và tiến trình"
-                          onChange={v => {
-                            setRejoinDirty(true);
-                            setRejoinDraft(p => ({ ...p, checkIntervalSec: v }));
-                          }}
-                        />
-                        <SliderField
-                          label="Delay after launch"
-                          unit="s"
-                          min={0}
-                          max={120}
-                          value={rejoinDraft.delayAfterLaunchSec}
-                          hint="Thời gian chờ tối thiểu trước khi mở lại cùng 1 bản clone"
-                          onChange={v => {
-                            setRejoinDirty(true);
-                            setRejoinDraft(p => ({ ...p, delayAfterLaunchSec: v }));
-                          }}
-                        />
-                        <SliderField
-                          label="Delay between clones"
-                          unit="s"
-                          min={0}
-                          max={60}
-                          value={rejoinDraft.delayBetweenClonesSec}
-                          hint="Giãn cách khi khởi chạy lần lượt giữa các bản clone"
-                          onChange={v => {
-                            setRejoinDirty(true);
-                            setRejoinDraft(p => ({ ...p, delayBetweenClonesSec: v }));
-                          }}
-                        />
-                        <SliderField
-                          label="Boot grace"
-                          unit="s"
-                          min={10}
-                          max={300}
-                          value={rejoinDraft.bootGraceSec}
-                          hint="Thời gian chờ clone tải game và mở cửa sổ sau khi khởi chạy"
-                          onChange={v => {
-                            setRejoinDirty(true);
-                            setRejoinDraft(p => ({ ...p, bootGraceSec: v }));
-                          }}
-                        />
-                        <SliderField
-                          label="Window grace"
-                          unit="s"
-                          min={10}
-                          max={300}
-                          value={rejoinDraft.windowGraceSec}
-                          hint="Mất cửa sổ quá lâu sẽ tính là crash; bỏ qua khi dump lỗi"
-                          onChange={v => {
-                            setRejoinDirty(true);
-                            setRejoinDraft(p => ({ ...p, windowGraceSec: v }));
-                          }}
-                        />
-                        <SliderField
-                          label="Disconnect confirm"
-                          unit="s"
-                          min={2}
-                          max={60}
-                          value={rejoinDraft.disconnectConfirmSec}
-                          hint="Màn hình mất kết nối phải giữ đủ thời gian này mới rejoin"
-                          onChange={v => {
-                            setRejoinDirty(true);
-                            setRejoinDraft(p => ({ ...p, disconnectConfirmSec: v }));
-                          }}
-                        />
-                        <SliderField
-                          label="Network UDP timeout"
-                          unit="s"
-                          min={0}
-                          max={300}
-                          value={rejoinDraft.networkTimeoutSec}
-                          zeroLabel="Tắt"
-                          hint="Kiểm tra socket UDP theo UID (thay thế heartbeat; 0 = tắt)"
-                          onChange={v => {
-                            setRejoinDirty(true);
-                            setRejoinDraft(p => ({ ...p, networkTimeoutSec: v }));
-                          }}
-                        />
-                        <SliderField
-                          label="Max rejoin interval"
-                          unit="s"
-                          min={30}
-                          max={900}
-                          value={rejoinDraft.maxRejoinIntervalSec}
-                          hint="Khoảng nghỉ tối đa giữa hai lần thử lại"
-                          onChange={v => {
-                            setRejoinDirty(true);
-                            setRejoinDraft(p => ({ ...p, maxRejoinIntervalSec: v }));
-                          }}
-                        />
-                        <SliderField
-                          label="Retry attempts"
-                          unit="lần"
-                          min={0}
-                          max={50}
-                          value={rejoinDraft.retryAttempts}
-                          zeroLabel="Không giới hạn"
-                          hint="0 = thử lại không giới hạn khi mất kết nối/crash"
-                          onChange={v => {
-                            setRejoinDirty(true);
-                            setRejoinDraft(p => ({ ...p, retryAttempts: v }));
-                          }}
-                        />
-                        <SliderField
-                          label="Backoff"
-                          unit="s"
-                          min={5}
-                          max={120}
-                          value={rejoinDraft.backoffSec}
-                          hint="Thời gian nghỉ cơ bản, nhân đôi sau mỗi lần lỗi liên tiếp"
-                          onChange={v => {
-                            setRejoinDirty(true);
-                            setRejoinDraft(p => ({ ...p, backoffSec: v }));
-                          }}
-                        />
-                      </div>
+                      <button type="submit" className="primary full" disabled={blocked || !profiles.length}>
+                        <RotateCcw size={16} /> Rejoin tất cả{rejoinDraft.placeId ? ` vào ${rejoinDraft.placeId}` : ""}
+                      </button>
+                      <p className="muted" style={{ fontSize: 11, marginTop: -8 }}>
+                        1 nút làm trọn gói: lưu Place ID, bật Auto-rejoin watchdog và đóng/mở lại toàn bộ clone đang bật.
+                      </p>
 
-                      <div className="rejoin-toggles">
-                        <div className="rejoin-toggle-box">
-                          <div className="watch-heading">
-                            <div>
-                              <h4>Teleport detection</h4>
-                              <p>Bỏ qua ngắt kết nối ngắn ngay sau khi người chơi chuyển server.</p>
-                            </div>
-                            <button
-                              type="button"
-                              role="switch"
-                              aria-checked={rejoinDraft.teleportDetection}
-                              className={`switch ${rejoinDraft.teleportDetection ? "on" : ""}`}
-                              onClick={() => {
-                                setRejoinDirty(true);
-                                setRejoinDraft(p => ({ ...p, teleportDetection: !p.teleportDetection }));
-                              }}
-                            >
-                              <span />
-                            </button>
-                          </div>
-                          {rejoinDraft.teleportDetection && (
+                      <button
+                        type="button"
+                        className="text-button"
+                        style={{ justifyContent: "flex-start", paddingLeft: 0 }}
+                        onClick={() => setShowRejoinAdvanced(prev => !prev)}
+                      >
+                        {showRejoinAdvanced ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                        Tùy chỉnh nâng cao (Thời gian chờ & cảm biến watchdog)
+                      </button>
+
+                      {showRejoinAdvanced && (
+                        <>
+                          <div className="rejoin-sliders">
                             <SliderField
-                              label="Grace period"
+                              label="Check interval"
+                              unit="s"
+                              min={3}
+                              max={60}
+                              value={rejoinDraft.checkIntervalSec}
+                              hint="Chu kỳ đọc trạng thái app, cửa sổ và tiến trình"
+                              onChange={v => {
+                                setRejoinDirty(true);
+                                setRejoinDraft(p => ({ ...p, checkIntervalSec: v }));
+                              }}
+                            />
+                            <SliderField
+                              label="Delay after launch"
+                              unit="s"
+                              min={0}
+                              max={120}
+                              value={rejoinDraft.delayAfterLaunchSec}
+                              hint="Thời gian chờ tối thiểu trước khi mở lại cùng 1 bản clone"
+                              onChange={v => {
+                                setRejoinDirty(true);
+                                setRejoinDraft(p => ({ ...p, delayAfterLaunchSec: v }));
+                              }}
+                            />
+                            <SliderField
+                              label="Delay between clones"
+                              unit="s"
+                              min={0}
+                              max={60}
+                              value={rejoinDraft.delayBetweenClonesSec}
+                              hint="Giãn cách khi khởi chạy lần lượt giữa các bản clone"
+                              onChange={v => {
+                                setRejoinDirty(true);
+                                setRejoinDraft(p => ({ ...p, delayBetweenClonesSec: v }));
+                              }}
+                            />
+                            <SliderField
+                              label="Boot grace"
                               unit="s"
                               min={10}
                               max={300}
-                              value={rejoinDraft.teleportGraceSec}
-                              hint="Thời gian miễn kiểm tra disconnect sau khi chuyển server"
+                              value={rejoinDraft.bootGraceSec}
+                              hint="Thời gian chờ clone tải game và mở cửa sổ sau khi khởi chạy"
                               onChange={v => {
                                 setRejoinDirty(true);
-                                setRejoinDraft(p => ({ ...p, teleportGraceSec: v }));
+                                setRejoinDraft(p => ({ ...p, bootGraceSec: v }));
                               }}
                             />
-                          )}
-                        </div>
+                            <SliderField
+                              label="Window grace"
+                              unit="s"
+                              min={10}
+                              max={300}
+                              value={rejoinDraft.windowGraceSec}
+                              hint="Mất cửa sổ quá lâu sẽ tính là crash; bỏ qua khi dump lỗi"
+                              onChange={v => {
+                                setRejoinDirty(true);
+                                setRejoinDraft(p => ({ ...p, windowGraceSec: v }));
+                              }}
+                            />
+                            <SliderField
+                              label="Disconnect confirm"
+                              unit="s"
+                              min={2}
+                              max={60}
+                              value={rejoinDraft.disconnectConfirmSec}
+                              hint="Màn hình mất kết nối phải giữ đủ thời gian này mới rejoin"
+                              onChange={v => {
+                                setRejoinDirty(true);
+                                setRejoinDraft(p => ({ ...p, disconnectConfirmSec: v }));
+                              }}
+                            />
+                            <SliderField
+                              label="Network UDP timeout"
+                              unit="s"
+                              min={0}
+                              max={300}
+                              value={rejoinDraft.networkTimeoutSec}
+                              zeroLabel="Tắt"
+                              hint="Kiểm tra socket UDP theo UID (thay thế heartbeat; 0 = tắt)"
+                              onChange={v => {
+                                setRejoinDirty(true);
+                                setRejoinDraft(p => ({ ...p, networkTimeoutSec: v }));
+                              }}
+                            />
+                            <SliderField
+                              label="Max rejoin interval"
+                              unit="s"
+                              min={30}
+                              max={900}
+                              value={rejoinDraft.maxRejoinIntervalSec}
+                              hint="Khoảng nghỉ tối đa giữa hai lần thử lại"
+                              onChange={v => {
+                                setRejoinDirty(true);
+                                setRejoinDraft(p => ({ ...p, maxRejoinIntervalSec: v }));
+                              }}
+                            />
+                            <SliderField
+                              label="Retry attempts"
+                              unit="lần"
+                              min={0}
+                              max={50}
+                              value={rejoinDraft.retryAttempts}
+                              zeroLabel="Không giới hạn"
+                              hint="0 = thử lại không giới hạn khi mất kết nối/crash"
+                              onChange={v => {
+                                setRejoinDirty(true);
+                                setRejoinDraft(p => ({ ...p, retryAttempts: v }));
+                              }}
+                            />
+                            <SliderField
+                              label="Backoff"
+                              unit="s"
+                              min={5}
+                              max={120}
+                              value={rejoinDraft.backoffSec}
+                              hint="Thời gian nghỉ cơ bản, nhân đôi sau mỗi lần lỗi liên tiếp"
+                              onChange={v => {
+                                setRejoinDirty(true);
+                                setRejoinDraft(p => ({ ...p, backoffSec: v }));
+                              }}
+                            />
+                          </div>
 
-                        <div className="rejoin-toggle-box">
-                          <div className="watch-heading">
-                            <div>
-                              <h4>Rejoin on crash (4 lớp kiểm tra)</h4>
-                              <p>
-                                Phát hiện tiến trình chết hoặc cửa sổ biến mất khi cả 4 lớp (task list, window manager,
-                                surfaces, screen tree) đồng thuận.
-                              </p>
+                          <div className="rejoin-toggles">
+                            <div className="rejoin-toggle-box">
+                              <div className="watch-heading">
+                                <div>
+                                  <h4>Teleport detection</h4>
+                                  <p>Bỏ qua ngắt kết nối ngắn ngay sau khi người chơi chuyển server.</p>
+                                </div>
+                                <button
+                                  type="button"
+                                  role="switch"
+                                  aria-checked={rejoinDraft.teleportDetection}
+                                  className={`switch ${rejoinDraft.teleportDetection ? "on" : ""}`}
+                                  onClick={() => {
+                                    setRejoinDirty(true);
+                                    setRejoinDraft(p => ({ ...p, teleportDetection: !p.teleportDetection }));
+                                  }}
+                                >
+                                  <span />
+                                </button>
+                              </div>
+                              {rejoinDraft.teleportDetection && (
+                                <SliderField
+                                  label="Grace period"
+                                  unit="s"
+                                  min={10}
+                                  max={300}
+                                  value={rejoinDraft.teleportGraceSec}
+                                  hint="Thời gian miễn kiểm tra disconnect sau khi chuyển server"
+                                  onChange={v => {
+                                    setRejoinDirty(true);
+                                    setRejoinDraft(p => ({ ...p, teleportGraceSec: v }));
+                                  }}
+                                />
+                              )}
                             </div>
+
+                            <div className="rejoin-toggle-box">
+                              <div className="watch-heading">
+                                <div>
+                                  <h4>Rejoin on crash (4 lớp kiểm tra)</h4>
+                                  <p>
+                                    Phát hiện tiến trình chết hoặc cửa sổ biến mất khi cả 4 lớp (task list, window
+                                    manager, surfaces, screen tree) đồng thuận.
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  role="switch"
+                                  aria-checked={rejoinDraft.rejoinOnCrash}
+                                  className={`switch ${rejoinDraft.rejoinOnCrash ? "on" : ""}`}
+                                  onClick={() => {
+                                    setRejoinDirty(true);
+                                    setRejoinDraft(p => ({ ...p, rejoinOnCrash: !p.rejoinOnCrash }));
+                                  }}
+                                >
+                                  <span />
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="rejoin-toggle-box">
+                              <div className="watch-heading">
+                                <div>
+                                  <h4>Phát hiện màn hình Disconnect & CAPTCHA</h4>
+                                  <p>
+                                    Quét cây UI có giới hạn timeout để rejoin khi Disconnected; tự tạm dừng khi gặp màn
+                                    hình đăng nhập hoặc CAPTCHA.
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  role="switch"
+                                  aria-checked={rejoinDraft.detectDisconnectUi}
+                                  className={`switch ${rejoinDraft.detectDisconnectUi ? "on" : ""}`}
+                                  onClick={() => {
+                                    setRejoinDirty(true);
+                                    setRejoinDraft(p => ({ ...p, detectDisconnectUi: !p.detectDisconnectUi }));
+                                  }}
+                                >
+                                  <span />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="rejoin-actions">
                             <button
                               type="button"
-                              role="switch"
-                              aria-checked={rejoinDraft.rejoinOnCrash}
-                              className={`switch ${rejoinDraft.rejoinOnCrash ? "on" : ""}`}
+                              className="secondary"
                               onClick={() => {
-                                setRejoinDirty(true);
-                                setRejoinDraft(p => ({ ...p, rejoinOnCrash: !p.rejoinOnCrash }));
+                                setRejoinDraft(current.telemetry?.rejoinConfig ?? DEFAULT_REJOIN_CONFIG);
+                                setRejoinDirty(false);
                               }}
                             >
-                              <span />
+                              Hoàn tác
                             </button>
-                          </div>
-                        </div>
-
-                        <div className="rejoin-toggle-box">
-                          <div className="watch-heading">
-                            <div>
-                              <h4>Phát hiện màn hình Disconnect & CAPTCHA</h4>
-                              <p>
-                                Quét cây UI có giới hạn timeout để rejoin khi Disconnected; tự tạm dừng khi gặp màn hình
-                                đăng nhập hoặc CAPTCHA.
-                              </p>
-                            </div>
                             <button
                               type="button"
-                              role="switch"
-                              aria-checked={rejoinDraft.detectDisconnectUi}
-                              className={`switch ${rejoinDraft.detectDisconnectUi ? "on" : ""}`}
-                              onClick={() => {
-                                setRejoinDirty(true);
-                                setRejoinDraft(p => ({ ...p, detectDisconnectUi: !p.detectDisconnectUi }));
-                              }}
+                              className="secondary"
+                              disabled={blocked}
+                              onClick={() => void saveRejoinConfig()}
                             >
-                              <span />
+                              <Check size={16} /> Chỉ lưu cấu hình
                             </button>
                           </div>
-                        </div>
-                      </div>
-
-                      <div className="rejoin-actions">
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={() => {
-                            setRejoinDraft(current.telemetry?.rejoinConfig ?? DEFAULT_REJOIN_CONFIG);
-                            setRejoinDirty(false);
-                          }}
-                        >
-                          Hoàn tác
-                        </button>
-                        <button type="submit" className="primary" disabled={blocked}>
-                          <Check size={16} /> Lưu cấu hình Auto-rejoin
-                        </button>
-                      </div>
+                        </>
+                      )}
                     </form>
                   ) : (
                     <div className="command-list">
@@ -1276,39 +1347,54 @@ export default function Dashboard() {
                       </button>
                     </div>
                     <p className="muted">
-                      Tự kiểm tra crash 4 lớp & màn hình Disconnect, có hàng đợi giãn cách tuần tự giữa các clone. Tạm
-                      dừng nếu gặp CAPTCHA.
+                      {activePlaceId ? (
+                        <>
+                          Place ID: <b style={{ color: "#dce4f2" }}>{activePlaceId}</b> · Tự kiểm tra crash &amp;
+                          Disconnect.
+                        </>
+                      ) : (
+                        "Chưa đặt Place ID · Tự kiểm tra crash & Disconnect."
+                      )}
                     </p>
+                    <button
+                      className="primary full"
+                      style={{ marginTop: 12 }}
+                      disabled={blocked || !profiles.length}
+                      onClick={() => void runOneClickRejoin()}
+                    >
+                      <RotateCcw size={16} /> Rejoin tất cả{activePlaceId ? ` (${activePlaceId})` : ""}
+                    </button>
                     <button className="text-button full freeform-button" onClick={() => setTab("rejoin")}>
-                      <SlidersHorizontal size={14} /> Chỉnh tham số Auto-Rejoin
+                      <SlidersHorizontal size={14} /> Đổi Place ID / Nâng cao
                     </button>
                   </section>
 
-                  <button
-                    className="secondary full"
-                    disabled={blocked || !profiles.length}
-                    onClick={() => issue({ action: "rejoin_all" })}
-                  >
-                    <RotateCcw size={16} /> Rejoin tất cả vào Place ID
+                  <button className="text-button full" onClick={() => setShowExtraBatch(prev => !prev)}>
+                    {showExtraBatch ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Thao tác phụ khác
                   </button>
-                  <button className="secondary full" disabled={blocked} onClick={() => issue({ action: "open_all" })}>
-                    <Layers3 size={16} /> Mở tất cả đang bật
-                  </button>
-                  <button
-                    className="secondary full"
-                    disabled={blocked || !profiles.some(p => p.hasPassword)}
-                    onClick={() => issue({ action: "fill_login_all" })}
-                    title="Tự bấm Đăng nhập và điền tài khoản/mật khẩu cho các bản đang bật (tạm dừng nếu gặp CAPTCHA)"
-                  >
-                    <ShieldCheck size={16} /> Điền TK & MK đăng nhập
-                  </button>
-                  <button
-                    className="secondary full"
-                    disabled={blocked || !profiles.some(p => p.hasCookie ?? p.hasAccount)}
-                    onClick={() => issue({ action: "login_all" })}
-                  >
-                    <ShieldCheck size={16} /> Nạp cookie và mở
-                  </button>
+
+                  {showExtraBatch && (
+                    <>
+                      <button className="secondary full" disabled={blocked} onClick={() => issue({ action: "open_all" })}>
+                        <Layers3 size={16} /> Mở tất cả đang bật
+                      </button>
+                      <button
+                        className="secondary full"
+                        disabled={blocked || !profiles.some(p => p.hasCookie ?? p.hasAccount)}
+                        onClick={() => issue({ action: "login_all" })}
+                      >
+                        <ShieldCheck size={16} /> Nạp cookie và mở
+                      </button>
+                      <button
+                        className="secondary full"
+                        disabled={blocked || !profiles.some(p => p.hasPassword)}
+                        onClick={() => issue({ action: "fill_login_all" })}
+                        title="Tự bấm Đăng nhập và điền tài khoản/mật khẩu cho các bản đang bật (tạm dừng nếu gặp CAPTCHA)"
+                      >
+                        <ShieldCheck size={16} /> Điền TK & MK đăng nhập
+                      </button>
+                    </>
+                  )}
                 </aside>
               </div>
 
