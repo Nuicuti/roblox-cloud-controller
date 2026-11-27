@@ -58,6 +58,7 @@ export const commandSchema = z.discriminatedUnion("action", [
     gap: z.number().int().min(0).max(40),
     top: z.number().int().min(0).max(250),
     bottom: z.number().int().min(0).max(250),
+    smart: z.boolean().optional(),
   }).strict(),
   z.object({ action: z.literal("enable_freeform") }).strict(),
   z.object({ action: z.literal("restore_windowing") }).strict(),
@@ -154,4 +155,41 @@ export function isOnline(lastSeen: number | undefined, now = Date.now()) {
 
 export function ownedBy(device: { meta?: { ownerUid?: string } } | null, uid: string) {
   return Boolean(device?.meta?.ownerUid && device.meta.ownerUid === uid);
+}
+
+export function suggestGrid(count: number, width = 1280, height = 720) {
+  const n = Math.max(1, count);
+  const landscape = width >= height;
+  let rows = 2;
+  let cols = 2;
+  if (n <= 1) {
+    rows = 1;
+    cols = 1;
+  } else if (n === 2) {
+    rows = landscape ? 1 : 2;
+    cols = landscape ? 2 : 1;
+  } else if (n === 3) {
+    if (landscape) {
+      rows = width >= 960 ? 1 : 2;
+      cols = width >= 960 ? 3 : 2;
+    } else {
+      rows = 3;
+      cols = 1;
+    }
+  } else if (n === 4) {
+    rows = 2;
+    cols = 2;
+  } else if (n <= 6) {
+    rows = landscape ? 2 : 3;
+    cols = landscape ? 3 : 2;
+  } else if (n <= 9) {
+    rows = 3;
+    cols = 3;
+  } else {
+    const big = Math.min(6, Math.ceil(Math.sqrt(n)));
+    const small = Math.min(6, Math.ceil(n / big));
+    rows = landscape ? small : big;
+    cols = landscape ? big : small;
+  }
+  return { rows, cols, gap: 4, top: 24, bottom: 44 };
 }

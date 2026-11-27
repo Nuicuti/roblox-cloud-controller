@@ -65,6 +65,7 @@ test('rejoin config and global roblox packages pass rules while invalid bounds f
     rejoinOnCrash: true, detectDisconnectUi: true,
   };
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/cfg1'), { ...baseCmd, id: 'cfg1', action: 'set_rejoin_config', config }));
+  await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/grid1'), { ...baseCmd, id: 'grid1', action: 'grid', rows: 2, cols: 3, gap: 4, top: 24, bottom: 44, smart: true }));
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/rej1'), { ...baseCmd, id: 'rej1', action: 'rejoin', package: 'com.roblox.client' }));
   await assertFails(set(ref(db, base + '/devices/deviceA/inbox/bad1'), { ...baseCmd, id: 'bad1', action: 'rejoin', package: 'com.android.settings' }));
   await assertFails(set(ref(db, base + '/devices/deviceA/inbox/bad2'), { ...baseCmd, id: 'bad2', action: 'set_rejoin_config', config: { ...config, checkIntervalSec: 1 } }));

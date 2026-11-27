@@ -1,9 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { commandSchema, DEFAULT_REJOIN_CONFIG, ownedBy, isOnline } from '../lib/contracts.ts';
+import { commandSchema, DEFAULT_REJOIN_CONFIG, ownedBy, isOnline, suggestGrid } from '../lib/contracts.ts';
 
-test('accepts supported grid command', () => {
+test('accepts supported grid command and smart preset helper', () => {
   assert.equal(commandSchema.parse({ action: 'grid', rows: 2, cols: 3, gap: 6, top: 32, bottom: 36 }).cols, 3);
+  assert.equal(commandSchema.parse({ action: 'grid', rows: 2, cols: 3, gap: 4, top: 24, bottom: 44, smart: true }).smart, true);
+  assert.deepEqual(suggestGrid(6, 1280, 720), { rows: 2, cols: 3, gap: 4, top: 24, bottom: 44 });
+  assert.deepEqual(suggestGrid(6, 720, 1280), { rows: 3, cols: 2, gap: 4, top: 24, bottom: 44 });
+  assert.deepEqual(suggestGrid(4, 1280, 720), { rows: 2, cols: 2, gap: 4, top: 24, bottom: 44 });
 });
 
 test('accepts rejoin config, rejoin commands, and global roblox / 6 clones', () => {

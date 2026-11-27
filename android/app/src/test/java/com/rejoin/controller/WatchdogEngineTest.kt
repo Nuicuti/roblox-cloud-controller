@@ -102,6 +102,23 @@ class WatchdogEngineTest {
             ),
         )
 
+        assertEquals(2 to 3, AndroidInspector.suggestGridShape(6, 1280, 720))
+        assertEquals(3 to 2, AndroidInspector.suggestGridShape(6, 720, 1280))
+        assertEquals(2 to 2, AndroidInspector.suggestGridShape(4, 1280, 720))
+        assertEquals(1 to 2, AndroidInspector.suggestGridShape(2, 1280, 720))
+
+        val winDump = """
+            WINDOW MANAGER WINDOWS
+              Window #4 Window{a1b2 u0 premium.nokaA/com.roblox.client.MainActivity}:
+                mHasSurface=true isReadyForDisplay()=true
+                mFrames=Frames{containing=[4,24][427,346] parent=[4,24][427,346] display=[0,0][1280,720] frame=[262,161][685,483]}
+                WindowStateAnimator{ mShownPosition=(262.0, 161.0) }
+        """.trimIndent()
+        val wf = AndroidInspector.parseWindowFrame(winDump, "premium.nokaA")
+        assertEquals(RectBounds(262, 161, 685, 483), wf?.frame)
+        assertEquals(RectBounds(4, 24, 427, 346), wf?.containing)
+        assertEquals("(262.0,161.0)", wf?.shownPos)
+
         val udp = """
             sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
              12: 0100007F:1234 0100007F:0035 01 0:0 0:0 0 10142 0 1
@@ -213,5 +230,29 @@ class WatchdogEngineTest {
         assertFalse(engine.drainLaunchQueue(20_000))
         assertTrue(engine.drainLaunchQueue(25_000))
         assertEquals(2, fa.opened.size)
+    }
+
+    @Test
+    fun `smart grid chooses optimal landscape shape for 6 active clones`() {
+        val dir = tempFolder.newFolder("smart-grid")
+        val fa = FakeAndroid()
+        val engine = WatchdogEngine(dir, fa, CryptoStore(dir))
+        engine.scan()
+        // Disable com.roblox.client so 6 clones remain active
+        engine.profiles["com.roblox.client"]?.enabled = false
+        val msg = engine.execute(
+            JSONObject()
+                .put("action", "grid")
+                .put("rows", 3)
+                .put("cols", 2)
+                .put("gap", 4)
+                .put("top", 24)
+                .put("bottom", 44)
+                .put("smart", true),
+        )
+        assertTrue(msg.contains("2×3"))
+        assertEquals(2, engine.grid?.rows)
+        assertEquals(3, engine.grid?.cols)
+        assertEquals(6, fa.opened.size)
     }
 }

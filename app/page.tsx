@@ -46,6 +46,7 @@ import {
   type RejoinConfig,
   type Result,
   isOnline,
+  suggestGrid,
 } from "@/lib/contracts";
 import { sealAccounts } from "@/lib/seal";
 
@@ -145,8 +146,22 @@ export default function Dashboard() {
   const profiles = Object.values(current?.telemetry?.profiles ?? {}).sort((a, b) =>
     a.label.localeCompare(b.label, "vi", { numeric: true }),
   );
+  const activeCount = profiles.filter(p => p.enabled).length || profiles.length;
+  const smartGrid = suggestGrid(activeCount);
   const online = isOnline(current?.telemetry?.lastSeen);
   const results = Object.values(current?.results ?? {}).sort((a, b) => b.createdAt - a.createdAt);
+
+  useEffect(() => {
+    const saved = current?.telemetry?.grid;
+    if (saved) {
+      setRows(saved.rows);
+      setCols(saved.cols);
+    } else if (activeCount > 0) {
+      const next = suggestGrid(activeCount);
+      setRows(next.rows);
+      setCols(next.cols);
+    }
+  }, [current?.id]);
 
   useEffect(() => {
     if (!rejoinDirty && current?.telemetry?.rejoinConfig) {
@@ -1050,7 +1065,21 @@ export default function Dashboard() {
                       <Grid2X2 size={18} />
                       <h3>Sắp xếp cửa sổ</h3>
                     </div>
-                    <p className="muted">Chia màn hình Android thành lưới cửa sổ Freeform theo vị trí từng clone.</p>
+                    <p className="muted">
+                      Tự chia khít toàn bộ màn hình Freeform theo số clone bật và hướng ngang/dọc để dễ nhìn nhất.
+                    </p>
+                    <button
+                      className="primary full"
+                      style={{ marginTop: 12 }}
+                      disabled={blocked || !profiles.length}
+                      onClick={() => {
+                        setRows(smartGrid.rows);
+                        setCols(smartGrid.cols);
+                        issue({ action: "grid", ...smartGrid, smart: true });
+                      }}
+                    >
+                      <Grid2X2 size={16} /> Xếp lưới thông minh ({smartGrid.rows}×{smartGrid.cols})
+                    </button>
                     <div className="grid-preview" style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
                       {Array.from({ length: rows * cols }, (_, i) => (
                         <div key={i}>{profiles.find(p => p.slot === i + 1)?.label ?? <span>Ô {i + 1}</span>}</div>
@@ -1080,20 +1109,20 @@ export default function Dashboard() {
                         className="secondary compact"
                         onClick={() => {
                           setRows(2);
-                          setCols(2);
+                          setCols(3);
                         }}
                       >
-                        2×2 (4 acc)
+                        2×3 (Dễ nhìn)
                       </button>
                       <button
                         type="button"
                         className="secondary compact"
                         onClick={() => {
                           setRows(2);
-                          setCols(3);
+                          setCols(2);
                         }}
                       >
-                        2×3 (6 acc)
+                        2×2 (4 acc)
                       </button>
                       <button
                         type="button"
@@ -1108,16 +1137,16 @@ export default function Dashboard() {
                     </div>
                     {rows >= 3 && (
                       <p className="muted" style={{ fontSize: 10, marginTop: -4, marginBottom: 12 }}>
-                        Màn hình ngang Redfinger nên ưu tiên <b>2×3 (6 acc)</b> để chiều cao mỗi ô không nhỏ hơn mức tối
-                        thiểu của Android.
+                        Màn hình ngang Redfinger nên ưu tiên <b>2×3 (Dễ nhìn)</b> để chiều cao mỗi ô lớn hơn, không bị
+                        cắt nút Đăng nhập.
                       </p>
                     )}
                     <button
-                      className="primary full"
+                      className="secondary full"
                       disabled={blocked || !profiles.length}
-                      onClick={() => issue({ action: "grid", rows, cols, gap: 6, top: 32, bottom: 36 })}
+                      onClick={() => issue({ action: "grid", rows, cols, gap: 4, top: 24, bottom: 44 })}
                     >
-                      <Grid2X2 size={16} /> Áp dụng lưới
+                      <Grid2X2 size={16} /> Áp dụng lưới {rows}×{cols}
                     </button>
                     <button
                       className="text-button full freeform-button"

@@ -203,6 +203,7 @@ class WatchdogEngine(
         if (!android.freeformSupported()) {
             throw AgentException("Máy chưa hỗ trợ/bật freeform. Dùng Bật cửa sổ tự do, rồi kiểm tra lại.")
         }
+        if (launch) android.beginGridPass()
         val (w, h) = android.displaySize()
         val cells = AndroidInspector.gridBounds(w, h, settings.rows, settings.cols, settings.gap, settings.top, settings.bottom)
         val selected = profiles.values.filter { it.enabled }
@@ -398,18 +399,32 @@ class WatchdogEngine(
                 }
             }
             "grid" -> {
-                val gs = GridSettings(
-                    rows = command.getInt("rows"),
-                    cols = command.getInt("cols"),
-                    gap = command.getInt("gap"),
-                    top = command.getInt("top"),
-                    bottom = command.getInt("bottom"),
-                )
+                val (w, h) = android.displaySize()
+                val gs = if (command.optBoolean("smart", false)) {
+                    val active = profiles.values.filter { it.enabled }.sortedBy { it.slot }
+                    val targetCount = maxOf(active.size, 1)
+                    val (sr, sc) = AndroidInspector.suggestGridShape(targetCount, w, h)
+                    val (barTop, barBottom) = android.systemBarInsets()
+                    val capacity = sr * sc
+                    val uniqueSlots = active.map { it.slot }.distinct().size
+                    if (active.any { it.slot < 1 || it.slot > capacity } || uniqueSlots != active.size) {
+                        active.forEachIndexed { idx, p -> p.slot = idx + 1 }
+                    }
+                    GridSettings(rows = sr, cols = sc, gap = 4, top = barTop, bottom = barBottom)
+                } else {
+                    GridSettings(
+                        rows = command.getInt("rows"),
+                        cols = command.getInt("cols"),
+                        gap = command.getInt("gap"),
+                        top = command.getInt("top"),
+                        bottom = command.getInt("bottom"),
+                    )
+                }
                 layout(gs, launch = true)
                 grid = gs
                 saveState()
-                val (w, h) = android.displaySize()
-                "Đã xếp lưới ${gs.rows}×${gs.cols} (${w}×${h}) và xác nhận vị trí thực tế từ Android."
+                val note = android.lastResizeNote()?.let { " $it" } ?: ""
+                "Đã xếp lưới ${gs.rows}×${gs.cols} (${w}×${h}).$note"
             }
             "enable_freeform" -> {
                 windowBackup = android.setFreeformFlags(true, windowBackup)

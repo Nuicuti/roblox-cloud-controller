@@ -44,6 +44,12 @@ data class TaskPlacement(
     val freeform: Boolean,
 )
 
+data class WindowFrameInfo(
+    val frame: RectBounds?,
+    val containing: RectBounds?,
+    val shownPos: String?,
+)
+
 object AndroidInspector {
     private val HIST_RE = Regex("""\bHist\s+#\d+:\s+ActivityRecord\{""")
     private val TASK_PKG_RE = Regex("""\bu0\s+((?:[A-Za-z][A-Za-z0-9_]*\.)*[A-Za-z0-9_]*(?:noka|roblox|arceus)[A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*)/[^\s}]+\s+t(\d+)\b""", RegexOption.IGNORE_CASE)
@@ -240,6 +246,53 @@ object AndroidInspector {
         return cells
     }
 
+    fun suggestGridShape(count: Int, width: Int, height: Int): Pair<Int, Int> {
+        val n = maxOf(1, count)
+        val landscape = width >= height
+        return when {
+            n <= 1 -> 1 to 1
+            n == 2 -> if (landscape) 1 to 2 else 2 to 1
+            n == 3 -> if (landscape) (if (width >= 960) 1 to 3 else 2 to 2) else 3 to 1
+            n == 4 -> 2 to 2
+            n <= 6 -> if (landscape) 2 to 3 else 3 to 2
+            n <= 9 -> 3 to 3
+            else -> {
+                val big = minOf(6, kotlin.math.ceil(kotlin.math.sqrt(n.toDouble())).toInt())
+                val small = minOf(6, (n + big - 1) / big)
+                if (landscape) small to big else big to small
+            }
+        }
+    }
+
+    fun parseWindowFrame(windowsText: String?, pkg: String): WindowFrameInfo? {
+        if (windowsText.isNullOrEmpty() || (!windowsText.contains("WINDOW MANAGER") && !windowsText.contains("Window{"))) {
+            return null
+        }
+        val blockSplit = Regex("""(?m)(?=^[ \t]*Window\s+#\d+\s+Window\{)""")
+        val pkgRe = Regex("""\bu0\s+${Regex.escape(pkg)}(?:/|\}|\s)""")
+        val frameBracketRe = Regex("""\bframe=\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]""")
+        val mFrameRectRe = Regex("""\bmFrame=Rect\((-?\d+),\s*(-?\d+)\s*-\s*(-?\d+),\s*(-?\d+)\)""")
+        val containingRe = Regex("""\bcontaining=\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]""")
+        val shownPosRe = Regex("""\b(?:mShownPosition|pos)=\((-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)\)""")
+        for (block in blockSplit.split(windowsText)) {
+            if (!pkgRe.containsMatchIn(block)) continue
+            if (block.contains("mHasSurface=false") && block.contains("mViewVisibility=0x8")) continue
+            val fm = frameBracketRe.find(block) ?: mFrameRectRe.find(block)
+            val frame = fm?.let {
+                RectBounds(it.groupValues[1].toInt(), it.groupValues[2].toInt(), it.groupValues[3].toInt(), it.groupValues[4].toInt())
+            }
+            val cm = containingRe.find(block)
+            val containing = cm?.let {
+                RectBounds(it.groupValues[1].toInt(), it.groupValues[2].toInt(), it.groupValues[3].toInt(), it.groupValues[4].toInt())
+            }
+            val sp = shownPosRe.find(block)?.let { "(${it.groupValues[1]},${it.groupValues[2]})" }
+            if (frame != null || containing != null || sp != null) {
+                return WindowFrameInfo(frame = frame, containing = containing, shownPos = sp)
+            }
+        }
+        return null
+    }
+
     fun checkTaskList(tasksText: String?, pkg: String): Boolean? {
         if (tasksText.isNullOrEmpty() || !tasksText.contains("ACTIVITY MANAGER")) return null
         return pkg in parseTasks(tasksText)
@@ -406,6 +459,10 @@ interface AndroidDevice {
     fun udpPeers(pkg: String): Set<UdpPeer>?
     fun windowChecks(pkg: String, uiXml: String?, tasksText: String?, windowsText: String?, surfaceText: String?): WindowChecks
     fun displaySize(): Pair<Int, Int>
+    fun systemBarInsets(): Pair<Int, Int> = 24 to 44
+    fun windowFrame(pkg: String): WindowFrameInfo? = null
+    fun beginGridPass() {}
+    fun lastResizeNote(): String? = null
     fun freeformSupported(): Boolean
     fun open(pkg: String, freeform: Boolean = false, placeId: String = "", jobId: String = "")
     fun close(pkg: String)
@@ -417,6 +474,31 @@ interface AndroidDevice {
 class RootAndroidDevice(private val context: Context) : AndroidDevice {
     private val uidCache = mutableMapOf<String, Int>()
     private var flagsEnsured = false
+    private var cachedCalibOffset: Pair<Int, Int>? = null
+    private var resizeDiag: String? = null
+
+    override fun beginGridPass() {
+        cachedCalibOffset = null
+        resizeDiag = null
+    }
+
+    override fun lastResizeNote(): String? = resizeDiag
+
+    override fun windowFrame(pkg: String): WindowFrameInfo? = AndroidInspector.parseWindowFrame(windows(), pkg)
+
+    override fun systemBarInsets(): Pair<Int, Int> {
+        fun dimenPx(name: String, fallback: Int): Int {
+            return try {
+                val id = context.resources.getIdentifier(name, "dimen", "android")
+                if (id > 0) context.resources.getDimensionPixelSize(id) else fallback
+            } catch (_: Exception) {
+                fallback
+            }
+        }
+        val top = dimenPx("status_bar_height", 24).coerceIn(18, 80)
+        val bottom = dimenPx("navigation_bar_height", 44).coerceIn(28, 120)
+        return top to bottom
+    }
 
     private fun collectInstalledPackages(): Set<String> {
         val found = linkedSetOf<String>()
@@ -708,83 +790,118 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
             }
         }
 
-        val taskId = current.taskId
-        val stackId = current.stackId ?: 0
         val trace = mutableListOf<String>()
+        val targetBounds = cachedCalibOffset?.let { (dx, dy) ->
+            RectBounds(bounds.left - dx, bounds.top - dy, bounds.right - dx, bounds.bottom - dy)
+        } ?: bounds
 
-        val strategies: List<Pair<String, () -> ShellResult>> = buildList {
-            add("helper" to {
-                runWindowHelper(
-                    "resize", taskId.toString(),
-                    bounds.left.toString(), bounds.top.toString(), bounds.right.toString(), bounds.bottom.toString(),
-                    stackId.toString(),
-                )
-            })
-            add("am-task-space" to {
-                RootShell.run(
-                    listOf("/system/bin/am", "task", "resize", taskId.toString(), bounds.left.toString(), bounds.top.toString(), bounds.right.toString(), bounds.bottom.toString()),
-                    check = false, timeoutSec = 6,
-                )
-            })
-            add("am-task-comma" to {
-                RootShell.run(
-                    listOf("/system/bin/am", "task", "resize", taskId.toString(), "${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}"),
-                    check = false, timeoutSec = 6,
-                )
-            })
-            add("cmd-task-space" to {
-                RootShell.run(
-                    listOf("/system/bin/cmd", "activity", "task", "resize", taskId.toString(), bounds.left.toString(), bounds.top.toString(), bounds.right.toString(), bounds.bottom.toString()),
-                    check = false, timeoutSec = 6,
-                )
-            })
-            if (stackId > 0) {
-                add("helper-stack" to {
+        fun applyOnce(rect: RectBounds, initial: TaskPlacement): Pair<TaskPlacement, Boolean> {
+            val taskId = initial.taskId
+            val stackId = initial.stackId ?: 0
+            val strategies: List<Pair<String, () -> ShellResult>> = buildList {
+                add("helper" to {
                     runWindowHelper(
-                        "stack-resize", stackId.toString(),
-                        bounds.left.toString(), bounds.top.toString(), bounds.right.toString(), bounds.bottom.toString(),
+                        "resize", taskId.toString(),
+                        rect.left.toString(), rect.top.toString(), rect.right.toString(), rect.bottom.toString(),
+                        stackId.toString(),
                     )
                 })
-                add("am-stack-space" to {
+                add("am-task-space" to {
                     RootShell.run(
-                        listOf("/system/bin/am", "stack", "resize", stackId.toString(), bounds.left.toString(), bounds.top.toString(), bounds.right.toString(), bounds.bottom.toString()),
+                        listOf("/system/bin/am", "task", "resize", taskId.toString(), rect.left.toString(), rect.top.toString(), rect.right.toString(), rect.bottom.toString()),
                         check = false, timeoutSec = 6,
                     )
                 })
-                add("am-stack-comma" to {
+                add("am-task-comma" to {
                     RootShell.run(
-                        listOf("/system/bin/am", "stack", "resize", stackId.toString(), "${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}"),
+                        listOf("/system/bin/am", "task", "resize", taskId.toString(), "${rect.left},${rect.top},${rect.right},${rect.bottom}"),
                         check = false, timeoutSec = 6,
                     )
                 })
+                add("cmd-task-space" to {
+                    RootShell.run(
+                        listOf("/system/bin/cmd", "activity", "task", "resize", taskId.toString(), rect.left.toString(), rect.top.toString(), rect.right.toString(), rect.bottom.toString()),
+                        check = false, timeoutSec = 6,
+                    )
+                })
+                if (stackId > 0) {
+                    add("helper-stack" to {
+                        runWindowHelper(
+                            "stack-resize", stackId.toString(),
+                            rect.left.toString(), rect.top.toString(), rect.right.toString(), rect.bottom.toString(),
+                        )
+                    })
+                    add("am-stack-space" to {
+                        RootShell.run(
+                            listOf("/system/bin/am", "stack", "resize", stackId.toString(), rect.left.toString(), rect.top.toString(), rect.right.toString(), rect.bottom.toString()),
+                            check = false, timeoutSec = 6,
+                        )
+                    })
+                    add("am-stack-comma" to {
+                        RootShell.run(
+                            listOf("/system/bin/am", "stack", "resize", stackId.toString(), "${rect.left},${rect.top},${rect.right},${rect.bottom}"),
+                            check = false, timeoutSec = 6,
+                        )
+                    })
+                }
+            }
+            var latest = initial
+            for ((name, step) in strategies) {
+                val res = step()
+                trace.add("$name(${res.exitCode}):${res.output.replace('\n', ' ').take(60)}")
+                Thread.sleep(220)
+                latest = inspectPlacement(pkg) ?: latest
+                if (placementSatisfied(latest, rect, tolerance = 24)) {
+                    return latest to true
+                }
+            }
+            val r = latest.bounds
+            val originMoved = latest.freeform && r != null && r != beforeRect &&
+                abs(r.left - rect.left) <= 36 && abs(r.top - rect.top) <= 36
+            return latest to originMoved
+        }
+
+        var (latest, ok) = applyOnce(targetBounds, current)
+        if (!ok) {
+            val afterRect = latest.bounds
+            throw AgentException(
+                "Không đổi được vị trí lưới cho $pkg (taskId=${current.taskId}, stack=${latest.stackId}, freeform=${latest.freeform}, " +
+                    "đích=[${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}], " +
+                    "thực tế=${afterRect?.let { "[${it.left},${it.top},${it.right},${it.bottom}]" } ?: "null"}). " +
+                    trace.joinToString(" | ").take(200),
+            )
+        }
+
+        // Check actual WindowManager window frame vs desired screen bounds and auto-compensate ROM offset if needed.
+        var wf = windowFrame(pkg)
+        if (cachedCalibOffset == null && wf?.frame != null) {
+            val errX = wf.frame.left - bounds.left
+            val errY = wf.frame.top - bounds.top
+            if (abs(errX) > 40 || abs(errY) > 40) {
+                val compensated = RectBounds(bounds.left - errX, bounds.top - errY, bounds.right - errX, bounds.bottom - errY)
+                applyOnce(compensated, latest)
+                Thread.sleep(200)
+                val wf2 = windowFrame(pkg)
+                val improved = wf2?.frame != null &&
+                    (abs(wf2.frame.left - bounds.left) + abs(wf2.frame.top - bounds.top)) < (abs(errX) + abs(errY))
+                if (improved) {
+                    cachedCalibOffset = errX to errY
+                    wf = wf2
+                    latest = inspectPlacement(pkg) ?: latest
+                } else {
+                    applyOnce(bounds, latest)
+                    wf = windowFrame(pkg)
+                    latest = inspectPlacement(pkg) ?: latest
+                }
             }
         }
-
-        var latest = current
-        for ((name, step) in strategies) {
-            val res = step()
-            trace.add("$name(${res.exitCode}):${res.output.replace('\n', ' ').take(80)}")
-            Thread.sleep(250)
-            latest = inspectPlacement(pkg) ?: latest
-            if (placementSatisfied(latest, bounds, tolerance = 24)) {
-                return latest.taskId
-            }
+        if (resizeDiag == null) {
+            val tb = latest.bounds?.let { "[${it.left},${it.top}..${it.right},${it.bottom}]" } ?: "null"
+            val fb = wf?.frame?.let { "[${it.left},${it.top}..${it.right},${it.bottom}]" } ?: "null"
+            val sp = wf?.shownPos ?: "-"
+            resizeDiag = "Ô1 Task=$tb Win=$fb Pos=$sp"
         }
-
-        val afterRect = latest.bounds
-        // Accept when Android moved the freeform window to the cell's origin, even if ROM clamped minimum height/width.
-        if (latest.freeform && afterRect != null && afterRect != beforeRect &&
-            abs(afterRect.left - bounds.left) <= 36 && abs(afterRect.top - bounds.top) <= 36
-        ) {
-            return latest.taskId
-        }
-
-        throw AgentException(
-            "Không đổi được vị trí lưới cho $pkg (taskId=$taskId, stack=${latest.stackId}, freeform=${latest.freeform}, " +
-                "đích=[${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}], " +
-                "thực tế=${afterRect?.let { "[${it.left},${it.top},${it.right},${it.bottom}]" } ?: "null"}). " +
-                trace.joinToString(" | ").take(240),
-        )
+        return latest.taskId
     }
 
     override fun setFreeformFlags(enabled: Boolean, previousBackup: Map<String, String>?): Map<String, String> {
