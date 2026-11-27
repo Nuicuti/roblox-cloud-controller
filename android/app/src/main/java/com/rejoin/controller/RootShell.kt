@@ -62,9 +62,14 @@ object RootShell {
 
     fun hardenRuntime(packageName: String) {
         val pid = Process.myPid()
+        val qPkg = quote(packageName)
         val cmds = listOf(
             "echo -1000 > /proc/$pid/oom_score_adj",
-            "/system/bin/dumpsys deviceidle whitelist +${quote(packageName)}",
+            "/system/bin/dumpsys deviceidle whitelist +$qPkg",
+            "/system/bin/cmd appops set $qPkg RUN_IN_BACKGROUND allow",
+            "/system/bin/cmd appops set $qPkg RUN_ANY_IN_BACKGROUND allow",
+            "/system/bin/cmd appops set $qPkg START_FOREGROUND allow",
+            "/system/bin/am set-standby-bucket $qPkg active",
             "/system/bin/settings put global settings_enable_monitor_phantom_procs false",
         )
         for (c in cmds) {

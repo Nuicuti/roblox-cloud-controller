@@ -32,10 +32,12 @@ class RejoinForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            setExplicitStop(this, true)
             setServiceDesired(this, false)
             stopSelf()
             return START_NOT_STICKY
         }
+        setExplicitStop(this, false)
         setServiceDesired(this, true)
         startForeground(NOTIF_ID, buildNotification("Đang khởi chạy dịch vụ giám sát Root..."))
         acquireWakeLock()
@@ -72,7 +74,23 @@ class RejoinForegroundService : Service() {
             stopSelf()
             return
         }
-        if (!RootShell.hasRoot()) {
+        var rootReady = false
+        for (attempt in 1..8) {
+            if (!running) break
+            if (RootShell.hasRoot()) {
+                rootReady = true
+                break
+            }
+            if (attempt == 1) {
+                updateNotification("Đang chờ quyền Root sau khi khởi động...")
+            }
+            try {
+                Thread.sleep(3000)
+            } catch (_: InterruptedException) {
+                break
+            }
+        }
+        if (!rootReady) {
             appendLog("[!] Chưa được cấp quyền Root (su). Mở app và cấp quyền SuperUser.")
             stopSelf()
             return
@@ -207,6 +225,7 @@ class RejoinForegroundService : Service() {
         const val ACTION_STOP = "com.rejoin.controller.STOP"
         private const val PREFS = "rejoin_prefs"
         private const val KEY_DESIRED = "service_desired"
+        private const val KEY_EXPLICIT_STOP = "explicit_stop"
 
         @Volatile
         var isRunning: Boolean = false
@@ -233,6 +252,13 @@ class RejoinForegroundService : Service() {
 
         fun setServiceDesired(ctx: Context, desired: Boolean) {
             ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_DESIRED, desired).apply()
+        }
+
+        fun wasExplicitlyStopped(ctx: Context): Boolean =
+            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_EXPLICIT_STOP, false)
+
+        fun setExplicitStop(ctx: Context, stopped: Boolean) {
+            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_EXPLICIT_STOP, stopped).apply()
         }
 
         fun createPairingTicket(ctx: Context, apiKey: String, dbUrl: String): Pair<String, String> {
