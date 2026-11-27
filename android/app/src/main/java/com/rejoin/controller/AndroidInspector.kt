@@ -874,16 +874,18 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
 
         // Check actual WindowManager window frame vs desired screen bounds and auto-compensate ROM offset if needed.
         var wf = windowFrame(pkg)
-        if (cachedCalibOffset == null && wf?.frame != null) {
-            val errX = wf.frame.left - bounds.left
-            val errY = wf.frame.top - bounds.top
+        val initialFrame = wf?.frame
+        if (cachedCalibOffset == null && initialFrame != null) {
+            val errX = initialFrame.left - bounds.left
+            val errY = initialFrame.top - bounds.top
             if (abs(errX) > 40 || abs(errY) > 40) {
                 val compensated = RectBounds(bounds.left - errX, bounds.top - errY, bounds.right - errX, bounds.bottom - errY)
                 applyOnce(compensated, latest)
                 Thread.sleep(200)
                 val wf2 = windowFrame(pkg)
-                val improved = wf2?.frame != null &&
-                    (abs(wf2.frame.left - bounds.left) + abs(wf2.frame.top - bounds.top)) < (abs(errX) + abs(errY))
+                val wf2Frame = wf2?.frame
+                val improved = wf2Frame != null &&
+                    (abs(wf2Frame.left - bounds.left) + abs(wf2Frame.top - bounds.top)) < (abs(errX) + abs(errY))
                 if (improved) {
                     cachedCalibOffset = errX to errY
                     wf = wf2
