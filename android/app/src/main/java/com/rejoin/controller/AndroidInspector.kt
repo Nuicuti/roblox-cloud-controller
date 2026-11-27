@@ -265,21 +265,29 @@ object AndroidInspector {
     }
 
     fun parseWindowFrame(windowsText: String?, pkg: String): WindowFrameInfo? {
-        if (windowsText.isNullOrEmpty() || (!windowsText.contains("WINDOW MANAGER") && !windowsText.contains("Window{"))) {
+        if (windowsText.isNullOrEmpty() || !windowsText.contains("Window{")) {
             return null
         }
-        val blockSplit = Regex("""(?m)(?=^[ \t]*Window\s+#\d+\s+Window\{)""")
-        val pkgRe = Regex("""\bu0\s+${Regex.escape(pkg)}(?:/|\}|\s)""")
-        val frameBracketRe = Regex("""\bframe=\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]""")
-        val mFrameRectRe = Regex("""\bmFrame=Rect\((-?\d+),\s*(-?\d+)\s*-\s*(-?\d+),\s*(-?\d+)\)""")
+        val blockSplit = Regex("""(?m)(?=^[ \t]*(?:Window\s+#\d+\s+)?Window\{)""")
+        val pkgRe = Regex("""\b${Regex.escape(pkg)}(?:/|\}|\s)""")
+        val frameBracketRe = Regex("""\b(?:mFrame|frame|mShownFrame|mVisibleFrame|mCompatFrame)=\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]""")
+        val frameRectRe = Regex("""\b(?:mFrame|frame|mShownFrame|mCompatFrame)=Rect\((-?\d+),\s*(-?\d+)\s*-\s*(-?\d+),\s*(-?\d+)\)""")
+        val surfRectRe = Regex("""\brect=\((-?\d+),\s*(-?\d+),\s*(-?\d+),\s*(-?\d+)\)""")
         val containingRe = Regex("""\bcontaining=\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]""")
         val shownPosRe = Regex("""\b(?:mShownPosition|pos)=\((-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)\)""")
+        var fallback: WindowFrameInfo? = null
         for (block in blockSplit.split(windowsText)) {
             if (!pkgRe.containsMatchIn(block)) continue
             if (block.contains("mHasSurface=false") && block.contains("mViewVisibility=0x8")) continue
-            val fm = frameBracketRe.find(block) ?: mFrameRectRe.find(block)
+            val fm = frameBracketRe.find(block) ?: frameRectRe.find(block)
             val frame = fm?.let {
                 RectBounds(it.groupValues[1].toInt(), it.groupValues[2].toInt(), it.groupValues[3].toInt(), it.groupValues[4].toInt())
+            } ?: surfRectRe.find(block)?.let {
+                val x = it.groupValues[1].toInt()
+                val y = it.groupValues[2].toInt()
+                val w = it.groupValues[3].toInt()
+                val h = it.groupValues[4].toInt()
+                if (w > 0 && h > 0) RectBounds(x, y, x + w, y + h) else null
             }
             val cm = containingRe.find(block)
             val containing = cm?.let {
@@ -287,10 +295,59 @@ object AndroidInspector {
             }
             val sp = shownPosRe.find(block)?.let { "(${it.groupValues[1]},${it.groupValues[2]})" }
             if (frame != null || containing != null || sp != null) {
-                return WindowFrameInfo(frame = frame, containing = containing, shownPos = sp)
+                val info = WindowFrameInfo(frame = frame, containing = containing, shownPos = sp)
+                if (block.contains("mHasSurface=true") && frame != null) return info
+                if (fallback == null) fallback = info
+            }
+        }
+        return fallback
+    }
+
+    fun parseSurfaceLayerInfo(sfText: String?, pkg: String): String? {
+        if (sfText.isNullOrEmpty()) return null
+        val lines = sfText.lines()
+        val pkgEsc = Regex.escape(pkg)
+        val headerRe = Regex("""(?:Layer|name=).*$pkgEsc""", RegexOption.IGNORE_CASE)
+        val hwcRowRe = Regex("""$pkgEsc[^\n]*\|\s*[\d.\s-]+""", RegexOption.IGNORE_CASE)
+        for (i in lines.indices) {
+            val line = lines[i]
+            if (headerRe.containsMatchIn(line)) {
+                val snippet = lines.drop(i + 1).take(14)
+                    .map { it.trim() }
+                    .filter {
+                        it.contains("bounds", ignoreCase = true) ||
+                            it.contains("pos=", ignoreCase = true) ||
+                            it.contains("position", ignoreCase = true) ||
+                            it.contains("Region", ignoreCase = true) ||
+                            it.contains("tx=", ignoreCase = true) ||
+                            it.contains("frame", ignoreCase = true)
+                    }
+                    .take(3)
+                    .joinToString("; ")
+                if (snippet.isNotEmpty()) return snippet.take(140)
+            }
+            if (hwcRowRe.containsMatchIn(line)) {
+                return line.trim().take(140)
             }
         }
         return null
+    }
+
+    fun summarizeWindowLines(windowsText: String?, pkg: String): String {
+        if (windowsText.isNullOrEmpty()) return "win-empty"
+        val blockSplit = Regex("""(?m)(?=^[ \t]*(?:Window\s+#\d+\s+)?Window\{)""")
+        val pkgRe = Regex("""\b${Regex.escape(pkg)}(?:/|\}|\s)""")
+        val block = blockSplit.split(windowsText).firstOrNull { pkgRe.containsMatchIn(it) }
+            ?: return "no-win-for-$pkg(hasWin=${windowsText.contains("Window{")},len=${windowsText.length})"
+        val lines = block.lines().map { it.trim() }.filter {
+            it.contains("Frame", ignoreCase = true) ||
+                it.contains("containing=", ignoreCase = true) ||
+                it.contains("Surface", ignoreCase = true) ||
+                it.contains("pos=", ignoreCase = true) ||
+                it.contains("rect=", ignoreCase = true) ||
+                it.contains("mAttrs=", ignoreCase = true)
+        }
+        return lines.take(4).joinToString(" | ").ifEmpty { block.lines().take(3).joinToString(" ").trim() }.take(180)
     }
 
     fun checkTaskList(tasksText: String?, pkg: String): Boolean? {
@@ -862,6 +919,9 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
         }
 
         var (latest, ok) = applyOnce(targetBounds, current)
+        if (!ok && cachedCalibOffset != null && latest.freeform && latest.bounds != null) {
+            ok = true
+        }
         if (!ok) {
             val afterRect = latest.bounds
             throw AgentException(
@@ -873,7 +933,8 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
         }
 
         // Check actual WindowManager window frame vs desired screen bounds and auto-compensate ROM offset if needed.
-        var wf = windowFrame(pkg)
+        var winDump = windows()
+        var wf = AndroidInspector.parseWindowFrame(winDump, pkg)
         val initialFrame = wf?.frame
         if (cachedCalibOffset == null && initialFrame != null) {
             val errX = initialFrame.left - bounds.left
@@ -882,26 +943,30 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
                 val compensated = RectBounds(bounds.left - errX, bounds.top - errY, bounds.right - errX, bounds.bottom - errY)
                 applyOnce(compensated, latest)
                 Thread.sleep(200)
-                val wf2 = windowFrame(pkg)
+                val winDump2 = windows()
+                val wf2 = AndroidInspector.parseWindowFrame(winDump2, pkg)
                 val wf2Frame = wf2?.frame
                 val improved = wf2Frame != null &&
                     (abs(wf2Frame.left - bounds.left) + abs(wf2Frame.top - bounds.top)) < (abs(errX) + abs(errY))
                 if (improved) {
                     cachedCalibOffset = errX to errY
+                    winDump = winDump2
                     wf = wf2
                     latest = inspectPlacement(pkg) ?: latest
                 } else {
                     applyOnce(bounds, latest)
-                    wf = windowFrame(pkg)
+                    winDump = windows()
+                    wf = AndroidInspector.parseWindowFrame(winDump, pkg)
                     latest = inspectPlacement(pkg) ?: latest
                 }
             }
         }
         if (resizeDiag == null) {
             val tb = latest.bounds?.let { "[${it.left},${it.top}..${it.right},${it.bottom}]" } ?: "null"
-            val fb = wf?.frame?.let { "[${it.left},${it.top}..${it.right},${it.bottom}]" } ?: "null"
-            val sp = wf?.shownPos ?: "-"
-            resizeDiag = "Ô1 Task=$tb Win=$fb Pos=$sp"
+            val fb = wf?.frame?.let { "[${it.left},${it.top}..${it.right},${it.bottom}]" } ?: AndroidInspector.summarizeWindowLines(winDump, pkg)
+            val sfRaw = RootShell.run(listOf("/system/bin/dumpsys", "SurfaceFlinger"), check = false, timeoutSec = 5).output
+            val sfInfo = AndroidInspector.parseSurfaceLayerInfo(sfRaw, pkg) ?: "no-sf"
+            resizeDiag = "Ô1 Task=$tb Win=$fb SF=$sfInfo"
         }
         return latest.taskId
     }

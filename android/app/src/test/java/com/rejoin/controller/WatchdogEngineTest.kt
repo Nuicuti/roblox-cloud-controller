@@ -111,13 +111,20 @@ class WatchdogEngineTest {
             WINDOW MANAGER WINDOWS
               Window #4 Window{a1b2 u0 premium.nokaA/com.roblox.client.MainActivity}:
                 mHasSurface=true isReadyForDisplay()=true
-                mFrames=Frames{containing=[4,24][427,346] parent=[4,24][427,346] display=[0,0][1280,720] frame=[262,161][685,483]}
+                mFrames=Frames{containing=[4,24][427,346] parent=[4,24][427,346] display=[0,0][1280,720] mFrame=[262,161][685,483]}
                 WindowStateAnimator{ mShownPosition=(262.0, 161.0) }
         """.trimIndent()
         val wf = AndroidInspector.parseWindowFrame(winDump, "premium.nokaA")
         assertEquals(RectBounds(262, 161, 685, 483), wf?.frame)
         assertEquals(RectBounds(4, 24, 427, 346), wf?.containing)
         assertEquals("(262.0,161.0)", wf?.shownPos)
+
+        val sfDump = """
+            + Layer 0x7a (premium.nokaA/com.roblox.client.MainActivity#0)
+              Region visibleRegion (count=1): [257, 172, 678, 492]
+              pos=(257.0, 172.0)
+        """.trimIndent()
+        assertTrue(AndroidInspector.parseSurfaceLayerInfo(sfDump, "premium.nokaA")?.contains("257") == true)
 
         val udp = """
             sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
