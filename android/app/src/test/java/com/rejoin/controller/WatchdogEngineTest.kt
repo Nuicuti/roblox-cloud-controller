@@ -492,5 +492,15 @@ class WatchdogEngineTest {
         assertTrue(engine.grid != null)
         assertTrue(fa.opened.isEmpty())
         assertTrue(fa.closed.isEmpty())
+
+        val closeMsg = engine.execute(JSONObject().put("action", "close_all"))
+        assertTrue(closeMsg.contains("Đã đóng"))
+        assertTrue(fa.closed.containsAll(listOf("free.nokaA", "free.nokaB")))
+        assertFalse(engine.profiles.getValue("free.nokaA").autoReopen)
+        assertTrue(engine.profiles.getValue("free.nokaA").enabled)
+
+        engine.execute(JSONObject().put("action", "rejoin_all"))
+        assertTrue(engine.profiles.getValue("free.nokaA").autoReopen)
+        assertFalse(fa.opened.isEmpty())
     }
 }

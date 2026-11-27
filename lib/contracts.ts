@@ -44,6 +44,7 @@ export const commandSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("scan") }).strict(),
   z.object({ action: z.literal("open_all") }).strict(),
   z.object({ action: z.literal("rejoin_all") }).strict(),
+  z.object({ action: z.literal("close_all") }).strict(),
   z.object({ action: z.literal("status") }).strict(),
   z.object({ action: z.literal("set_watch"), enabled: z.boolean() }).strict(),
   z.object({ action: z.literal("set_rejoin_config"), config: rejoinConfigSchema }).strict(),

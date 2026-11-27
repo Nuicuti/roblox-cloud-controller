@@ -60,6 +60,7 @@ const actionNames: Record<string, string> = {
   scan: "Quét bản clone",
   open_all: "Mở các bản đang bật",
   rejoin_all: "Rejoin tất cả",
+  close_all: "Đóng tất cả tab Roblox",
   set_watch: "Auto-rejoin loop (toàn máy)",
   set_rejoin_config: "Lưu cấu hình Auto-rejoin",
   profile: "Lưu cấu hình bản clone",
@@ -1342,6 +1343,16 @@ export default function Dashboard() {
                         <Minimize2 size={13} /> Tab ra ngoài
                       </button>
                     </div>
+                    <button
+                      type="button"
+                      className="secondary compact full"
+                      style={{ marginTop: 8, color: "#f29494", borderColor: "#f2949444" }}
+                      disabled={blocked || !profiles.length}
+                      onClick={() => issue({ action: "close_all" })}
+                      title="Đóng toàn bộ tab Noka/Roblox đang chạy và tạm dừng tự mở lại"
+                    >
+                      <Square size={13} /> Đóng tất cả tab Roblox
+                    </button>
                     <button
                       className="text-button full freeform-button"
                       disabled={blocked}

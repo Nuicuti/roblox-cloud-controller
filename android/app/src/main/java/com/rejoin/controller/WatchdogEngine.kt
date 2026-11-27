@@ -434,6 +434,21 @@ class WatchdogEngine(
                 android.minimizeAll(profiles.keys)
                 "Đã thu gọn các tab đang chạy xuống màn hình chính (giữ nguyên game)."
             }
+            "close_all" -> {
+                launchQueue.clear()
+                var closedCount = 0
+                for (p in profiles.values.sortedBy { it.slot }) {
+                    p.autoReopen = false
+                    p.healthState = "stopped"
+                    p.healthMessage = "Đã đóng tất cả tab từ dashboard."
+                    p.error = null
+                    health.remove(p.packageName)
+                    android.close(p.packageName)
+                    closedCount++
+                }
+                saveState()
+                "Đã đóng $closedCount tab Roblox và tạm dừng tự mở lại."
+            }
             "retile" -> {
                 val gs = grid ?: run {
                     val (w, h) = android.displaySize()
@@ -452,12 +467,14 @@ class WatchdogEngine(
                 val forceStop = action == "rejoin_all"
                 val selected = profiles.values.filter { it.enabled }.sortedBy { it.slot }
                 if (selected.isEmpty()) throw AgentException("Chưa có bản nào đang bật quản lý.")
+                for (p in selected) p.autoReopen = true
                 val cfg = effectiveConfig()
                 if (cfg.delayBetweenClonesSec > 0) {
                     for (p in selected) {
                         health.remove(p.packageName)
                         enqueueLaunch(p.packageName, forceStop)
                     }
+                    saveState()
                     drainLaunchQueue(nowMs)
                     val verb = if (forceStop) "rejoin" else "mở"
                     "Đã xếp hàng $verb tuần tự ${selected.size} bản (giãn cách ${cfg.delayBetweenClonesSec}s)."
