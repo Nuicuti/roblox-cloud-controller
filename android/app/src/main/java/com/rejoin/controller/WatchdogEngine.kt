@@ -412,6 +412,42 @@ class WatchdogEngine(
                 openProfile(pkg, forceStop = true, nowMs = nowMs)
                 "Đã rejoin ${p.label}."
             }
+            "fullscreen" -> {
+                val pkg = command.getString("package")
+                val p = requireProfile(pkg)
+                p.enabled = true
+                val cfg = effectiveConfig()
+                val (placeId, jobId) = effectiveTarget(p, cfg)
+                val wasRunning = android.running(pkg)
+                android.showFullscreen(pkg, profiles.keys, placeId = placeId, jobId = jobId)
+                if (wasRunning) {
+                    "Đã phóng ${p.label} ra toàn màn hình (giữ nguyên game đang chạy)."
+                } else {
+                    health[pkg] = HealthTracker(lastCheckMs = nowMs, lastLaunchMs = nowMs)
+                    p.healthState = "booting"
+                    p.healthMessage = "Đang khởi chạy toàn màn hình."
+                    saveState()
+                    "Đã mở ${p.label} ở chế độ toàn màn hình."
+                }
+            }
+            "minimize_all" -> {
+                android.minimizeAll(profiles.keys)
+                "Đã thu gọn các tab đang chạy xuống màn hình chính (giữ nguyên game)."
+            }
+            "retile" -> {
+                val gs = grid ?: run {
+                    val (w, h) = android.displaySize()
+                    val active = profiles.values.filter { it.enabled }.sortedBy { it.slot }
+                    val (sr, sc) = AndroidInspector.suggestGridShape(maxOf(active.size, 1), w, h)
+                    val (barTop, barBottom) = android.systemBarInsets()
+                    GridSettings(rows = sr, cols = sc, gap = 4, top = barTop, bottom = barBottom).also {
+                        grid = it
+                    }
+                }
+                layout(gs, launch = false)
+                saveState()
+                "Đã đưa các tab đang chạy về lưới ${gs.rows}×${gs.cols} (không tắt game)."
+            }
             "open_all", "rejoin_all" -> {
                 val forceStop = action == "rejoin_all"
                 val selected = profiles.values.filter { it.enabled }.sortedBy { it.slot }

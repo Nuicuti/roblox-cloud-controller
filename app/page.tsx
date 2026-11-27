@@ -24,6 +24,8 @@ import {
   Link2,
   LoaderCircle,
   LogOut,
+  Maximize2,
+  Minimize2,
   Monitor,
   Pencil,
   Plus,
@@ -64,6 +66,9 @@ const actionNames: Record<string, string> = {
   open: "Mở ứng dụng",
   close: "Đóng ứng dụng",
   rejoin: "Rejoin vào game",
+  fullscreen: "Phóng to toàn màn hình",
+  minimize_all: "Tab ra màn hình chính",
+  retile: "Về lưới (giữ game)",
   grid: "Xếp lưới",
   enable_freeform: "Bật cửa sổ tự do",
   restore_windowing: "Khôi phục cửa sổ",
@@ -852,6 +857,14 @@ export default function Dashboard() {
                                 <button
                                   className="row-action"
                                   disabled={blocked}
+                                  onClick={() => issue({ action: "fullscreen", package: profile.package })}
+                                  title="Phóng to riêng tab này toàn màn hình để kiểm tra (không tắt game đang chạy)"
+                                >
+                                  <Maximize2 size={13} /> Toàn MH
+                                </button>
+                                <button
+                                  className="row-action"
+                                  disabled={blocked}
                                   onClick={() => issue({ action: "rejoin", package: profile.package })}
                                   title="Tắt hẳn (force-stop) và mở lại riêng tab này"
                                 >
@@ -1309,6 +1322,26 @@ export default function Dashboard() {
                     >
                       <Grid2X2 size={16} /> Sắp xếp lưới {rows}×{cols}
                     </button>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 8 }}>
+                      <button
+                        type="button"
+                        className="secondary compact"
+                        disabled={blocked || !profiles.length}
+                        onClick={() => issue({ action: "retile" })}
+                        title="Xếp lại các tab đang chạy về lưới hiện tại mà không tắt game"
+                      >
+                        <Grid2X2 size={13} /> Về lưới
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary compact"
+                        disabled={blocked || !profiles.length}
+                        onClick={() => issue({ action: "minimize_all" })}
+                        title="Ẩn toàn bộ tab Noka xuống màn hình chính (giữ nguyên game)"
+                      >
+                        <Minimize2 size={13} /> Tab ra ngoài
+                      </button>
+                    </div>
                     <button
                       className="text-button full freeform-button"
                       disabled={blocked}

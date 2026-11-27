@@ -466,4 +466,31 @@ class WatchdogEngineTest {
         assertEquals(1, fa.opened.size)
         assertEquals("free.nokaB", fa.opened[0].first)
     }
+
+    @Test
+    fun `fullscreen, minimize_all, and retile preserve active running clones`() {
+        val dir = tempFolder.newFolder("fullscreen-retile")
+        val crypto = CryptoStore(dir)
+        val fa = FakeAndroid()
+        val engine = WatchdogEngine(storageDir = dir, android = fa, crypto = crypto)
+        engine.scan()
+        fa.runningMap["free.nokaA"] = true
+        fa.runningMap["free.nokaB"] = true
+
+        val fsMsg = engine.execute(JSONObject().put("action", "fullscreen").put("package", "free.nokaA"))
+        assertTrue(fsMsg.contains("toàn màn hình"))
+        assertTrue(fa.opened.isEmpty())
+        assertTrue(fa.closed.isEmpty())
+
+        val minMsg = engine.execute(JSONObject().put("action", "minimize_all"))
+        assertTrue(minMsg.contains("màn hình chính"))
+        assertTrue(fa.opened.isEmpty())
+        assertTrue(fa.closed.isEmpty())
+
+        val retileMsg = engine.execute(JSONObject().put("action", "retile"))
+        assertTrue(retileMsg.contains("lưới"))
+        assertTrue(engine.grid != null)
+        assertTrue(fa.opened.isEmpty())
+        assertTrue(fa.closed.isEmpty())
+    }
 }

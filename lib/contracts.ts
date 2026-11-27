@@ -51,6 +51,9 @@ export const commandSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("open"), package: packageSchema }).strict(),
   z.object({ action: z.literal("close"), package: packageSchema }).strict(),
   z.object({ action: z.literal("rejoin"), package: packageSchema }).strict(),
+  z.object({ action: z.literal("fullscreen"), package: packageSchema }).strict(),
+  z.object({ action: z.literal("minimize_all") }).strict(),
+  z.object({ action: z.literal("retile") }).strict(),
   z.object({
     action: z.literal("grid"),
     rows: z.number().int().min(1).max(6),

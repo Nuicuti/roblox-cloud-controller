@@ -24,8 +24,7 @@ object NokaApkInspector {
     private val STD_PREFIX_RE = Regex(
         """^L(?:java|javax|kotlin|kotlinx|android|androidx|dalvik|sun|com/google|com/facebook|com/appsflyer|io/branch|org/json|org/apache|org/chromium)/""",
     )
-    @Volatile
-    private var dexScannedOnce = false
+    private val dexScannedPkgs = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     fun collect(context: Context, managedPackages: Collection<String>): JSONObject {
         val out = JSONObject()
@@ -47,7 +46,11 @@ object NokaApkInspector {
         }
         val extraNokaPkg = thirdParty.firstOrNull {
             it != samplePkg && !it.startsWith("premium.noka") && !it.startsWith("free.noka") &&
-                (it.contains("noka", ignoreCase = true) || it.contains("roblox", ignoreCase = true))
+                (
+                    it.contains("noka", ignoreCase = true) ||
+                        it.contains("nclones", ignoreCase = true) ||
+                        it.contains("roblox", ignoreCase = true)
+                    )
         }
         if (!extraNokaPkg.isNullOrEmpty()) {
             out.put("extraApk", inspectApk(context, extraNokaPkg))
@@ -283,8 +286,7 @@ object NokaApkInspector {
         }
         apkObj.put("manifest", pkgLines.take(70).joinToString("\n").take(2600))
 
-        if (apkPath.isNotEmpty() && File(apkPath).canRead() && !dexScannedOnce) {
-            dexScannedOnce = true
+        if (apkPath.isNotEmpty() && File(apkPath).canRead() && dexScannedPkgs.add(pkg)) {
             try {
                 ZipFile(apkPath).use { zip ->
                     val dexNames = mutableListOf<String>()
@@ -455,15 +457,15 @@ object NokaApkInspector {
                                     classes.add(s)
                                 }
                             } else if (strings.size < 120 &&
+                                !s.contains("Lcom/applisto/", ignoreCase = false) &&
                                 !s.contains("FloatingActionButton", ignoreCase = true) &&
                                 !s.contains("AppCompatTheme", ignoreCase = true) &&
                                 (
                                     s.contains("app_cloner", ignoreCase = true) ||
-                                        s.contains("applisto", ignoreCase = true) ||
                                         s.contains("FloatingApp", ignoreCase = true) ||
                                         s.contains("floatingApp", ignoreCase = true) ||
                                         s.contains("noka", ignoreCase = true) ||
-                                        s.contains("discord.gg", ignoreCase = true) ||
+                                        s.contains("nclones", ignoreCase = true) ||
                                         s.contains("window_left", ignoreCase = true) ||
                                         s.contains("window_top", ignoreCase = true) ||
                                         s.contains("DecorCaption", ignoreCase = true) ||

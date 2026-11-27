@@ -21,6 +21,9 @@ test('accepts rejoin config, rejoin commands, and global roblox / 6 clones', () 
   assert.equal(commandSchema.parse({ action: 'login', package: 'premium.nokaA' }).action, 'login');
   assert.equal(commandSchema.parse({ action: 'fill_login', package: 'premium.nokaA' }).action, 'fill_login');
   assert.equal(commandSchema.parse({ action: 'fill_login_all' }).action, 'fill_login_all');
+  assert.equal(commandSchema.parse({ action: 'fullscreen', package: 'premium.nokaA' }).action, 'fullscreen');
+  assert.equal(commandSchema.parse({ action: 'minimize_all' }).action, 'minimize_all');
+  assert.equal(commandSchema.parse({ action: 'retile' }).action, 'retile');
   assert.equal(commandSchema.parse({ action: 'self_update' }).action, 'self_update');
 });
 

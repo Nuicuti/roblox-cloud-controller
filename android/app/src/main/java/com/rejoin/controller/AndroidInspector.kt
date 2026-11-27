@@ -591,6 +591,8 @@ interface AndroidDevice {
     fun refreshDiagnostics(pkgs: Collection<String>): JSONObject? = null
     fun resetAppClonerWindows(pkgs: Collection<String>) {}
     fun focusPackage(pkg: String) {}
+    fun showFullscreen(pkg: String, allPkgs: Collection<String>, placeId: String = "", jobId: String = "") {}
+    fun minimizeAll(allPkgs: Collection<String>) {}
     fun freeformSupported(): Boolean
     fun open(pkg: String, freeform: Boolean = false, placeId: String = "", jobId: String = "")
     fun close(pkg: String)
@@ -899,10 +901,83 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
         throw AgentException("Chưa tìm thấy cửa sổ đang hoạt động của $pkg")
     }
 
-    private fun switchTaskToFreeform(taskId: Int) {
-        runWindowHelper("mode", taskId.toString(), "5")
-        RootShell.run(listOf("/system/bin/am", "task", "set-windowing-mode", taskId.toString(), "5"), check = false, timeoutSec = 5)
-        RootShell.run(listOf("/system/bin/cmd", "activity", "task", "set-windowing-mode", taskId.toString(), "5"), check = false, timeoutSec = 5)
+    private fun switchTaskWindowingMode(taskId: Int, mode: Int) {
+        runWindowHelper("mode", taskId.toString(), mode.toString())
+        RootShell.run(listOf("/system/bin/am", "task", "set-windowing-mode", taskId.toString(), mode.toString()), check = false, timeoutSec = 5)
+        RootShell.run(listOf("/system/bin/cmd", "activity", "task", "set-windowing-mode", taskId.toString(), mode.toString()), check = false, timeoutSec = 5)
+    }
+
+    private fun switchTaskToFreeform(taskId: Int) = switchTaskWindowingMode(taskId, 5)
+
+    override fun showFullscreen(pkg: String, allPkgs: Collection<String>, placeId: String, jobId: String) {
+        for (other in allPkgs) {
+            if (other == pkg) continue
+            try {
+                val p = inspectPlacement(other)
+                if (p != null && p.freeform) {
+                    switchTaskWindowingMode(p.taskId, 1)
+                }
+            } catch (_: Exception) {
+            }
+        }
+        val (w, h) = displaySize()
+        val (barTop, _) = systemBarInsets()
+        syncAppClonerWindowPrefs(pkg, 0, barTop, w, h, stopFirst = false)
+
+        val isRunning = running(pkg)
+        val existing = inspectPlacement(pkg)
+        if (isRunning && existing != null) {
+            if (existing.freeform) {
+                switchTaskWindowingMode(existing.taskId, 1)
+                Thread.sleep(220)
+            }
+            runWindowHelper("focus", existing.taskId.toString())
+            try {
+                val comp = resolveLauncher(pkg)
+                RootShell.run(
+                    listOf(
+                        "/system/bin/am", "start", "-W", "--user", "0",
+                        "--activity-reorder-to-front", "--windowingMode", "1",
+                        "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", "-n", comp,
+                    ),
+                    check = false, timeoutSec = 8,
+                )
+            } catch (_: Exception) {
+                focusPackage(pkg)
+            }
+            return
+        }
+
+        if (isRunning) {
+            close(pkg)
+            Thread.sleep(250)
+        }
+        open(pkg, freeform = false, placeId = placeId, jobId = jobId)
+        try {
+            val started = waitForTaskId(pkg, timeoutMs = 8_000L)
+            if (started.freeform) switchTaskWindowingMode(started.taskId, 1)
+            runWindowHelper("focus", started.taskId.toString())
+        } catch (_: Exception) {
+        }
+    }
+
+    override fun minimizeAll(allPkgs: Collection<String>) {
+        for (pkg in allPkgs) {
+            try {
+                val p = inspectPlacement(pkg)
+                if (p != null && p.freeform) {
+                    switchTaskWindowingMode(p.taskId, 1)
+                }
+            } catch (_: Exception) {
+            }
+        }
+        RootShell.run(
+            listOf(
+                "/system/bin/am", "start", "-W", "--user", "0",
+                "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME",
+            ),
+            check = false, timeoutSec = 8,
+        )
     }
 
     private fun placementSatisfied(p: TaskPlacement?, target: RectBounds, tolerance: Int = 24): Boolean {
@@ -1026,11 +1101,7 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
         }
         val targetW = safeBounds.right - safeBounds.left
         val targetH = safeBounds.bottom - safeBounds.top
-        val prefsUpdated = if (launch) {
-            syncAppClonerWindowPrefs(pkg, 0, 0, targetW, targetH, stopFirst = true)
-        } else {
-            false
-        }
+        val prefsUpdated = syncAppClonerWindowPrefs(pkg, 0, 0, targetW, targetH, stopFirst = launch)
         val existingPre = if (!prefsUpdated) inspectPlacement(pkg) else null
         if (existingPre?.bounds != null && (existingPre.bounds.left < 0 || existingPre.bounds.top < 0)) {
             close(pkg)
