@@ -562,4 +562,67 @@ class WatchdogEngineTest {
         assertTrue("free.nokaE" in reloaded.profiles)
         assertTrue("free.nokaF" in reloaded.profiles)
     }
+
+    @Test
+    fun `high RAM watchdog triggers single-tab rejoin and optimize_ram updates telemetry`() {
+        val dir = tempFolder.newFolder("ram-opt")
+        val crypto = CryptoStore(dir)
+        val opened = mutableListOf<String>()
+        val closed = mutableListOf<String>()
+        val cleared = mutableListOf<String>()
+        var rssA = 1350
+        var optApplied = ""
+        val dev = object : AndroidDevice {
+            override fun packages() = listOf("free.nokaA", "free.nokaB")
+            override fun running(pkg: String) = true
+            override fun tasks() = ""
+            override fun windows() = ""
+            override fun surfaces() = ""
+            override fun uiTreeXml() = ""
+            override fun accessibilityTexts() = mapOf("free.nokaA" to listOf("Game"), "free.nokaB" to listOf("Game"))
+            override fun udpPeers(pkg: String) = emptySet<UdpPeer>()
+            override fun processRssMb(pkgs: Collection<String>) = mapOf("free.nokaA" to rssA, "free.nokaB" to 600)
+            override fun clearPackageCache(pkg: String) { cleared.add(pkg) }
+            override fun trimMemoryAndClearCache(pkgs: Collection<String>) = "Trim OK (${pkgs.size})"
+            override fun applyClientSettings(pkgs: Collection<String>, fpsCap: Int, lowGraphics: Boolean): String {
+                optApplied = "$fpsCap:$lowGraphics:${pkgs.size}"
+                return "ClientAppSettings OK ($optApplied)"
+            }
+            override fun windowChecks(pkg: String, uiXml: String?, tasksText: String?, windowsText: String?, surfaceText: String?) =
+                WindowChecks(true, true, true, true)
+            override fun displaySize() = 1280 to 720
+            override fun freeformSupported() = true
+            override fun open(pkg: String, freeform: Boolean, placeId: String, jobId: String) { opened.add(pkg) }
+            override fun close(pkg: String) { closed.add(pkg) }
+            override fun resize(pkg: String, bounds: RectBounds, launch: Boolean, placeId: String, jobId: String): Int {
+                if (launch) opened.add(pkg)
+                return 1
+            }
+            override fun setFreeformFlags(enabled: Boolean, previousBackup: Map<String, String>?) = emptyMap<String, String>()
+            override fun deviceInfo() = "Redfinger Test" to "10"
+        }
+        val engine = WatchdogEngine(storageDir = dir, android = dev, crypto = crypto)
+        engine.scan()
+        val cfg = RejoinConfig(enabled = true, placeId = "2809202155", checkIntervalSec = 5, bootGraceSec = 10, maxRamMb = 1200)
+        engine.execute(JSONObject().put("action", "set_rejoin_config").put("config", cfg.toJson()))
+
+        // First high RAM hit: warning counter increments, no restart yet.
+        engine.watchdog(100_000)
+        assertTrue(closed.isEmpty())
+        // Second consecutive high RAM hit: restarts ONLY free.nokaA + clears cache!
+        engine.watchdog(106_000)
+        assertEquals(listOf("free.nokaA"), closed)
+        assertEquals(listOf("free.nokaA"), cleared)
+        assertEquals(listOf("free.nokaA"), opened)
+
+        // trim_ram and optimize_ram work cleanly and persist in telemetry.
+        assertTrue(engine.execute(JSONObject().put("action", "trim_ram")).contains("Trim OK"))
+        val optMsg = engine.execute(JSONObject().put("action", "optimize_ram").put("fpsCap", 15).put("lowGraphics", true))
+        assertTrue(optMsg.contains("15:true"))
+        engine.streamConnected = true
+        val tele = engine.buildTelemetry(includeDiag = false)
+        assertTrue(tele.getBoolean("streamConnected"))
+        assertEquals(15, tele.getJSONObject("optimization").getInt("fpsCap"))
+        assertTrue(tele.getJSONObject("optimization").getBoolean("lowGraphics"))
+    }
 }

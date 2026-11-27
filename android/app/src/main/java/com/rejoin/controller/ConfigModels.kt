@@ -23,6 +23,7 @@ object ConfigLimits {
         "retryAttempts" to 0..50,
         "backoffSec" to 5..120,
         "teleportGraceSec" to 10..300,
+        "maxRamMb" to 0..4096,
     )
 
     fun isAllowedPackage(pkg: String): Boolean = PACKAGE_REGEX.matches(pkg)
@@ -61,6 +62,7 @@ data class RejoinConfig(
     val teleportGraceSec: Int = 120,
     val rejoinOnCrash: Boolean = true,
     val detectDisconnectUi: Boolean = true,
+    val maxRamMb: Int = 0,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("enabled", enabled)
@@ -80,6 +82,7 @@ data class RejoinConfig(
         put("teleportGraceSec", teleportGraceSec)
         put("rejoinOnCrash", rejoinOnCrash)
         put("detectDisconnectUi", detectDisconnectUi)
+        put("maxRamMb", maxRamMb)
     }
 
     companion object {
@@ -88,6 +91,7 @@ data class RejoinConfig(
             "delayBetweenClonesSec", "bootGraceSec", "windowGraceSec", "disconnectConfirmSec",
             "networkTimeoutSec", "maxRejoinIntervalSec", "retryAttempts", "backoffSec",
             "teleportDetection", "teleportGraceSec", "rejoinOnCrash", "detectDisconnectUi",
+            "maxRamMb",
         )
 
         fun fromJsonStrict(obj: JSONObject): RejoinConfig {
@@ -125,6 +129,7 @@ data class RejoinConfig(
                 teleportGraceSec = obj.getInt("teleportGraceSec"),
                 rejoinOnCrash = obj.getBoolean("rejoinOnCrash"),
                 detectDisconnectUi = obj.getBoolean("detectDisconnectUi"),
+                maxRamMb = obj.getInt("maxRamMb"),
             )
         }
 
@@ -156,6 +161,7 @@ data class RejoinConfig(
                 teleportGraceSec = intBound("teleportGraceSec", d.teleportGraceSec),
                 rejoinOnCrash = obj.optBoolean("rejoinOnCrash", d.rejoinOnCrash),
                 detectDisconnectUi = obj.optBoolean("detectDisconnectUi", d.detectDisconnectUi),
+                maxRamMb = intBound("maxRamMb", d.maxRamMb),
             )
         }
     }

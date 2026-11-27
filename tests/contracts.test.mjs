@@ -27,6 +27,8 @@ test('accepts rejoin config, rejoin commands, and global roblox / 6 clones', () 
   assert.equal(commandSchema.parse({ action: 'close_all' }).action, 'close_all');
   assert.equal(commandSchema.parse({ action: 'remove_profile', package: 'premium.nokaF' }).action, 'remove_profile');
   assert.equal(commandSchema.parse({ action: 'restore_profiles' }).action, 'restore_profiles');
+  assert.equal(commandSchema.parse({ action: 'trim_ram' }).action, 'trim_ram');
+  assert.equal(commandSchema.parse({ action: 'optimize_ram', fpsCap: 15, lowGraphics: true }).fpsCap, 15);
   assert.equal(commandSchema.parse({ action: 'self_update' }).action, 'self_update');
 });
 

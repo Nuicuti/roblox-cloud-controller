@@ -141,6 +141,91 @@ class FirebaseRestClient(private val storageDir: File) {
         return request("devices/$uid/$suffix", method, payload)
     }
 
+    fun streamInbox(
+        shouldContinue: () -> Boolean,
+        onChange: () -> Unit,
+        onStreamState: (Boolean) -> Unit,
+    ) {
+        while (shouldContinue()) {
+            var conn: HttpURLConnection? = null
+            try {
+                authenticate()
+                val encodedPath = ("nokaController/v1/devices/$uid/inbox").split("/").joinToString("/") {
+                    URLEncoder.encode(it, "UTF-8")
+                }
+                val url = "$databaseUrl/$encodedPath.json?auth=${URLEncoder.encode(token, "UTF-8")}"
+                conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 15_000
+                    readTimeout = 45_000
+                    setRequestProperty("Accept", "text/event-stream")
+                    setRequestProperty("Cache-Control", "no-cache")
+                }
+                val code = conn.responseCode
+                if (code == 401 || code == 403) {
+                    clearSharedAuth(storageDir)
+                    token = ""
+                    expiryMs = 0L
+                    onStreamState(false)
+                    Thread.sleep(1500)
+                    continue
+                }
+                if (code !in 200..299) {
+                    onStreamState(false)
+                    Thread.sleep(2500)
+                    continue
+                }
+                onStreamState(true)
+                conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                    var eventName = ""
+                    val dataBuf = StringBuilder()
+                    while (shouldContinue()) {
+                        if (System.currentTimeMillis() >= expiryMs) break
+                        val line = reader.readLine() ?: break
+                        when {
+                            line.startsWith("event:") -> eventName = line.removePrefix("event:").trim()
+                            line.startsWith("data:") -> dataBuf.append(line.removePrefix("data:").trim())
+                            line.isEmpty() -> {
+                                val data = dataBuf.toString()
+                                dataBuf.setLength(0)
+                                when (eventName) {
+                                    "put", "patch" -> {
+                                        if (data.isNotEmpty() && !data.endsWith("\"data\":null}")) {
+                                            onChange()
+                                        }
+                                    }
+                                    "auth_revoked", "cancel" -> {
+                                        clearSharedAuth(storageDir)
+                                        token = ""
+                                        expiryMs = 0L
+                                        eventName = ""
+                                        throw RuntimeException("SSE $eventName")
+                                    }
+                                }
+                                eventName = ""
+                            }
+                        }
+                    }
+                }
+            } catch (_: InterruptedException) {
+                break
+            } catch (_: Exception) {
+            } finally {
+                onStreamState(false)
+                try {
+                    conn?.disconnect()
+                } catch (_: Exception) {
+                }
+            }
+            if (!shouldContinue()) break
+            try {
+                Thread.sleep(1000)
+            } catch (_: InterruptedException) {
+                break
+            }
+        }
+    }
+
     private fun httpJson(url: String, method: String, body: String?, form: Boolean = false): JSONObject? {
         val raw = httpRaw(url, method, body, form) ?: return null
         return if (raw.trim().startsWith("{")) JSONObject(raw) else null

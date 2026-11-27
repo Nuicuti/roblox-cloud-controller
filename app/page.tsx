@@ -72,6 +72,8 @@ const actionNames: Record<string, string> = {
   fullscreen: "Phóng to toàn màn hình",
   minimize_all: "Tab ra màn hình chính",
   retile: "Về lưới (giữ game)",
+  trim_ram: "Dọn RAM & cache ngay",
+  optimize_ram: "Áp dụng FPS & Low GFX",
   grid: "Xếp lưới",
   enable_freeform: "Bật cửa sổ tự do",
   restore_windowing: "Khôi phục cửa sổ",
@@ -161,6 +163,9 @@ export default function Dashboard() {
   const [tab, setTab] = useState<"accounts" | "rejoin" | "activity">("accounts");
   const [rejoinDraft, setRejoinDraft] = useState<RejoinConfig>(DEFAULT_REJOIN_CONFIG);
   const [rejoinDirty, setRejoinDirty] = useState(false);
+  const [optFpsCap, setOptFpsCap] = useState(20);
+  const [optLowGraphics, setOptLowGraphics] = useState(true);
+  const [optDirty, setOptDirty] = useState(false);
   const [showRejoinAdvanced, setShowRejoinAdvanced] = useState(false);
   const [showExtraBatch, setShowExtraBatch] = useState(false);
 
@@ -172,6 +177,7 @@ export default function Dashboard() {
   const smartGrid = suggestGrid(activeCount);
   const online = isOnline(current?.telemetry?.lastSeen);
   const results = Object.values(current?.results ?? {}).sort((a, b) => b.createdAt - a.createdAt);
+  const hasActiveCommand = results.slice(0, 3).some(r => r.status === "queued" || r.status === "running");
 
   useEffect(() => {
     const saved = current?.telemetry?.grid;
@@ -192,6 +198,13 @@ export default function Dashboard() {
       setRejoinDraft({ ...DEFAULT_REJOIN_CONFIG, enabled: Boolean(current.telemetry.watch) });
     }
   }, [current?.id, current?.telemetry, rejoinDirty]);
+
+  useEffect(() => {
+    if (!optDirty && current?.telemetry?.optimization) {
+      setOptFpsCap(current.telemetry.optimization.fpsCap);
+      setOptLowGraphics(current.telemetry.optimization.lowGraphics);
+    }
+  }, [current?.id, current?.telemetry?.optimization, optDirty]);
 
   useEffect(() => {
     if (!auth) {
@@ -237,9 +250,9 @@ export default function Dashboard() {
     void refresh();
     const timer = setInterval(() => {
       void refresh();
-    }, 10_000);
+    }, hasActiveCommand ? 1_000 : 8_000);
     return () => clearInterval(timer);
-  }, [refresh]);
+  }, [refresh, hasActiveCommand]);
 
   async function send(command: Command) {
     if (demo || !current) return;
@@ -249,6 +262,8 @@ export default function Dashboard() {
       await api("/api/commands", { deviceId: current.id, command });
       setNotice(`Đã gửi “${actionNames[command.action] ?? command.action}”. Chờ máy phản hồi trong nhật ký.`);
       void refresh();
+      setTimeout(() => void refresh(), 550);
+      setTimeout(() => void refresh(), 1500);
     } catch (problem) {
       setError(problem instanceof Error ? problem.message : "Không gửi được lệnh.");
       throw problem;
@@ -763,7 +778,7 @@ export default function Dashboard() {
                       padding: "12px 16px",
                       marginBottom: 16,
                       display: "grid",
-                      gap: 8,
+                      gap: 10,
                     }}
                   >
                     <div
@@ -789,14 +804,102 @@ export default function Dashboard() {
                           </span>
                         ) : null}
                       </span>
-                      <span style={{ color: "#8e96a8", fontSize: 11 }}>
-                        CPU: {mem.cpuCores ?? "?"} nhân
-                        {typeof mem.load1m === "number" ? ` · Tải: ${mem.load1m.toFixed(2)}` : ""}
-                        {mem.lowMemory ? " · CẢNH BÁO THIẾU RAM" : ""}
-                      </span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        {current.telemetry.streamConnected !== undefined && (
+                          <span className={`status-pill ${current.telemetry.streamConnected ? "green" : "gray"}`}>
+                            {current.telemetry.streamConnected ? "SSE Tức thì" : "Poll"}
+                          </span>
+                        )}
+                        <span style={{ color: "#8e96a8", fontSize: 11 }}>
+                          CPU: {mem.cpuCores ?? "?"} nhân
+                          {typeof mem.load1m === "number" ? ` · Tải: ${mem.load1m.toFixed(2)}` : ""}
+                          {mem.lowMemory ? " · CẢNH BÁO THIẾU RAM" : ""}
+                        </span>
+                        <button
+                          type="button"
+                          className="secondary compact"
+                          disabled={blocked || !profiles.length}
+                          onClick={() => issue({ action: "trim_ram" })}
+                          title="Gửi trim-memory cho các tab đang chạy và dọn cache rác (giữ nguyên game & cookie)"
+                        >
+                          Dọn RAM ngay
+                        </button>
+                      </div>
                     </div>
                     <div style={{ height: 6, borderRadius: 99, background: "#1d2432", overflow: "hidden" }}>
                       <div style={{ width: `${pct}%`, height: "100%", background: color, transition: "width 0.3s" }} />
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        alignItems: "center",
+                        gap: 10,
+                        fontSize: 11,
+                        paddingTop: 2,
+                      }}
+                    >
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, margin: 0 }}>
+                        <span>FPS (ClientAppSettings):</span>
+                        <select
+                          value={optFpsCap}
+                          onChange={e => {
+                            setOptDirty(true);
+                            setOptFpsCap(Number(e.target.value));
+                          }}
+                          style={{ width: "auto", marginTop: 0, padding: "4px 8px", fontSize: 11 }}
+                        >
+                          <option value={0}>Mặc định Noka (20 FPS)</option>
+                          <option value={10}>10 FPS (Siêu nhẹ)</option>
+                          <option value={15}>15 FPS (Nhẹ AFK)</option>
+                          <option value={20}>20 FPS</option>
+                          <option value={30}>30 FPS</option>
+                          <option value={60}>60 FPS</option>
+                        </select>
+                      </label>
+                      <label className="checkbox-label" style={{ margin: 0, fontSize: 11 }}>
+                        <input
+                          type="checkbox"
+                          checked={optLowGraphics}
+                          onChange={e => {
+                            setOptDirty(true);
+                            setOptLowGraphics(e.target.checked);
+                          }}
+                        />
+                        <span>Tắt hiệu ứng nặng (Low GFX)</span>
+                      </label>
+                      <button
+                        type="button"
+                        className="secondary compact"
+                        disabled={blocked || !profiles.length}
+                        onClick={() => {
+                          setOptDirty(false);
+                          issue({ action: "optimize_ram", fpsCap: optFpsCap, lowGraphics: optLowGraphics });
+                        }}
+                        title="Ghi ClientAppSettings.json tối ưu FPS & đồ họa (bấm Rejoin tất cả để game nhận)"
+                      >
+                        Áp dụng FPS / Đồ họa
+                      </button>
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, margin: 0, marginLeft: "auto" }}>
+                        <span>Tự Rejoin tab khi RAM &gt;:</span>
+                        <select
+                          value={rejoinDraft.maxRamMb}
+                          disabled={blocked}
+                          onChange={e => {
+                            const nextMax = Number(e.target.value);
+                            setRejoinDirty(false);
+                            void saveRejoinConfig({ ...rejoinDraft, maxRamMb: nextMax });
+                          }}
+                          style={{ width: "auto", marginTop: 0, padding: "4px 8px", fontSize: 11 }}
+                        >
+                          <option value={0}>Tắt</option>
+                          <option value={900}>900 MB</option>
+                          <option value={1100}>1100 MB</option>
+                          <option value={1300}>1300 MB</option>
+                          <option value={1500}>1500 MB</option>
+                          <option value={1800}>1800 MB</option>
+                        </select>
+                      </label>
                     </div>
                     {current.telemetry.watch && current.telemetry.accessibilityEnabled === false && (
                       <div style={{ fontSize: 11, color: "#f2cb73" }}>
@@ -1229,6 +1332,19 @@ export default function Dashboard() {
                               onChange={v => {
                                 setRejoinDirty(true);
                                 setRejoinDraft(p => ({ ...p, backoffSec: v }));
+                              }}
+                            />
+                            <SliderField
+                              label="Auto-Rejoin tràn RAM"
+                              unit=" MB"
+                              min={0}
+                              max={3000}
+                              zeroLabel="Tắt"
+                              value={rejoinDraft.maxRamMb}
+                              hint="Tự đóng & mở lại riêng tab bị leak RAM quá ngưỡng (0 = tắt)"
+                              onChange={v => {
+                                setRejoinDirty(true);
+                                setRejoinDraft(p => ({ ...p, maxRamMb: v }));
                               }}
                             />
                           </div>

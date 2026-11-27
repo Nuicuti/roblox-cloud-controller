@@ -62,7 +62,7 @@ test('rejoin config and global roblox packages pass rules while invalid bounds f
     enabled: true, placeId: '1730877806', jobId: '', checkIntervalSec: 15, delayAfterLaunchSec: 10,
     delayBetweenClonesSec: 15, bootGraceSec: 150, windowGraceSec: 90, disconnectConfirmSec: 10, networkTimeoutSec: 0,
     maxRejoinIntervalSec: 300, retryAttempts: 0, backoffSec: 10, teleportDetection: true, teleportGraceSec: 120,
-    rejoinOnCrash: true, detectDisconnectUi: true,
+    rejoinOnCrash: true, detectDisconnectUi: true, maxRamMb: 1200,
   };
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/cfg1'), { ...baseCmd, id: 'cfg1', action: 'set_rejoin_config', config }));
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/grid1'), { ...baseCmd, id: 'grid1', action: 'grid', rows: 2, cols: 3, gap: 4, top: 24, bottom: 44, smart: true }));
@@ -76,6 +76,8 @@ test('rejoin config and global roblox packages pass rules while invalid bounds f
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/cls1'), { ...baseCmd, id: 'cls1', action: 'close_all' }));
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/rem1'), { ...baseCmd, id: 'rem1', action: 'remove_profile', package: 'premium.nokaF' }));
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/rst1'), { ...baseCmd, id: 'rst1', action: 'restore_profiles' }));
+  await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/trim1'), { ...baseCmd, id: 'trim1', action: 'trim_ram' }));
+  await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/opt1'), { ...baseCmd, id: 'opt1', action: 'optimize_ram', fpsCap: 15, lowGraphics: true }));
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/rej1'), { ...baseCmd, id: 'rej1', action: 'rejoin', package: 'com.roblox.client' }));
   await assertFails(set(ref(db, base + '/devices/deviceA/inbox/bad1'), { ...baseCmd, id: 'bad1', action: 'rejoin', package: 'com.android.settings' }));
   await assertFails(set(ref(db, base + '/devices/deviceA/inbox/bad2'), { ...baseCmd, id: 'bad2', action: 'set_rejoin_config', config: { ...config, checkIntervalSec: 1 } }));

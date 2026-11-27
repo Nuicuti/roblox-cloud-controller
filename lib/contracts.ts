@@ -27,6 +27,7 @@ export const rejoinConfigSchema = z.object({
   teleportGraceSec: z.number().int().min(10).max(300),
   rejoinOnCrash: z.boolean(),
   detectDisconnectUi: z.boolean(),
+  maxRamMb: z.number().int().min(0).max(4096),
 }).strict();
 
 export const profileSchema = z.object({
@@ -57,6 +58,12 @@ export const commandSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("fullscreen"), package: packageSchema }).strict(),
   z.object({ action: z.literal("minimize_all") }).strict(),
   z.object({ action: z.literal("retile") }).strict(),
+  z.object({ action: z.literal("trim_ram") }).strict(),
+  z.object({
+    action: z.literal("optimize_ram"),
+    fpsCap: z.number().int().min(0).max(120),
+    lowGraphics: z.boolean(),
+  }).strict(),
   z.object({
     action: z.literal("grid"),
     rows: z.number().int().min(1).max(6),
@@ -147,6 +154,12 @@ export type Device = {
       lowMemory?: boolean;
     };
     rejoinConfig?: RejoinConfig;
+    optimization?: {
+      fpsCap: number;
+      lowGraphics: boolean;
+      updatedAt?: number;
+    };
+    streamConnected?: boolean;
     profiles?: Record<string, Profile>;
     grid?: { rows: number; cols: number };
     freeform?: boolean;
@@ -174,6 +187,7 @@ export const DEFAULT_REJOIN_CONFIG: RejoinConfig = {
   teleportGraceSec: 120,
   rejoinOnCrash: true,
   detectDisconnectUi: true,
+  maxRamMb: 0,
 };
 
 export function isOnline(lastSeen: number | undefined, now = Date.now()) {

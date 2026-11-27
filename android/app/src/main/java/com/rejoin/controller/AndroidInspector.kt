@@ -668,6 +668,9 @@ interface AndroidDevice {
     fun isAccessibilityEnabled(): Boolean = false
     fun memoryInfo(): SystemMemInfo? = null
     fun processRssMb(pkgs: Collection<String>): Map<String, Int> = emptyMap()
+    fun clearPackageCache(pkg: String) {}
+    fun trimMemoryAndClearCache(pkgs: Collection<String>): String = ""
+    fun applyClientSettings(pkgs: Collection<String>, fpsCap: Int, lowGraphics: Boolean): String = ""
     fun udpPeers(pkg: String): Set<UdpPeer>?
     fun windowChecks(pkg: String, uiXml: String?, tasksText: String?, windowsText: String?, surfaceText: String?): WindowChecks
     fun displaySize(): Pair<Int, Int>
@@ -746,6 +749,123 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
             timeoutSec = 4,
         ).output
         return AndroidInspector.parsePsRssMb(psOut, pkgs)
+    }
+
+    override fun clearPackageCache(pkg: String) {
+        if (!ConfigLimits.isAllowedPackage(pkg)) return
+        val dataDir = "/data/data/$pkg"
+        val targets = listOf(
+            "$dataDir/cache",
+            "$dataDir/app_webview/Default/Cache",
+            "$dataDir/app_webview/Default/GPUCache",
+            "$dataDir/app_webview/Default/Code Cache",
+            "$dataDir/files/AFRequestCache",
+        )
+        val cmd = targets.joinToString("; ") { dir ->
+            val q = RootShell.quote(dir)
+            "if [ -d $q ]; then /system/bin/find $q -mindepth 1 -delete 2>/dev/null || true; fi"
+        }
+        RootShell.runRaw(cmd, check = false, timeoutSec = 5)
+    }
+
+    override fun trimMemoryAndClearCache(pkgs: Collection<String>): String {
+        val beforeUsed = memoryInfo()?.usedMb
+        var trimmed = 0
+        for (pkg in pkgs) {
+            if (!ConfigLimits.isAllowedPackage(pkg)) continue
+            if (running(pkg)) {
+                RootShell.run(listOf("/system/bin/am", "send-trim-memory", "--user", "0", pkg, "RUNNING_LOW"), check = false, timeoutSec = 3)
+                trimmed++
+            }
+            clearPackageCache(pkg)
+        }
+        Thread.sleep(350)
+        val afterUsed = memoryInfo()?.usedMb
+        val diffNote = if (beforeUsed != null && afterUsed != null) {
+            val saved = (beforeUsed - afterUsed).coerceAtLeast(0)
+            " (RAM máy: $beforeUsed -> $afterUsed MB, giảm ~$saved MB)"
+        } else {
+            ""
+        }
+        return "Đã gửi trim-memory tới $trimmed tab đang chạy và dọn cache cho ${pkgs.size} tab (giữ nguyên game & cookie)$diffNote."
+    }
+
+    override fun applyClientSettings(pkgs: Collection<String>, fpsCap: Int, lowGraphics: Boolean): String {
+        val samplePkg = pkgs.firstOrNull { ConfigLimits.isAllowedPackage(it) }
+            ?: throw AgentException("Chưa có bản clone nào để áp dụng ClientAppSettings.")
+        val baseJson = try {
+            val apkPath = RootShell.run(listOf("/system/bin/pm", "path", samplePkg), check = false, timeoutSec = 4).output
+                .lines()
+                .firstOrNull { it.startsWith("package:") }
+                ?.removePrefix("package:")
+                ?.trim()
+                ?: context.packageManager.getApplicationInfo(samplePkg, 0).sourceDir
+            var loaded: JSONObject? = null
+            if (!apkPath.isNullOrEmpty() && File(apkPath).canRead()) {
+                java.util.zip.ZipFile(apkPath).use { zip ->
+                    zip.getEntry("assets/ClientSettings/ClientAppSettings.json")?.let { entry ->
+                        loaded = JSONObject(zip.getInputStream(entry).bufferedReader().readText())
+                    }
+                }
+            }
+            loaded ?: JSONObject()
+        } catch (_: Exception) {
+            JSONObject()
+        }
+
+        if (fpsCap > 0) {
+            baseJson.put("DFIntTaskSchedulerTargetFps", fpsCap.toString())
+            baseJson.put("DFIntPhysicsStepLimitMaxFPS", fpsCap.toString())
+        }
+        if (lowGraphics) {
+            baseJson.put("FFlagDisablePostFx", "True")
+            baseJson.put("FIntRenderShadowIntensity", "0")
+            baseJson.put("DFIntDebugFRMQualityLevelOverride", "1")
+            baseJson.put("DFFlagTextureQualityOverrideEnabled", "True")
+            baseJson.put("DFIntTextureQualityOverride", "0")
+            baseJson.put("FIntFRMMaxGrassDistance", "0")
+            baseJson.put("FIntFRMMinGrassDistance", "0")
+            baseJson.put("FIntTerrainArraySliceSize", "4")
+            baseJson.put("DFFlagDebugRenderForceTechnologyVoxel", "True")
+        }
+
+        val payload = baseJson.toString(2)
+        val tmpGlobal = "/data/local/tmp/ClientAppSettings.json"
+        val qGlobal = RootShell.quote(tmpGlobal)
+        val globalCmd = buildString {
+            appendLine("cat <<'REJOIN_CS_EOF' > $qGlobal")
+            append(payload).appendLine()
+            appendLine("REJOIN_CS_EOF")
+            appendLine("/system/bin/chmod 644 $qGlobal")
+        }
+        RootShell.runRaw(globalCmd, check = false, timeoutSec = 5)
+
+        var appliedCount = 0
+        for (pkg in pkgs) {
+            if (!ConfigLimits.isAllowedPackage(pkg)) continue
+            val dataDir = "/data/data/$pkg"
+            val qData = RootShell.quote(dataDir)
+            val dirs = listOf("$dataDir/files/exe/ClientSettings", "$dataDir/files/ClientSettings")
+            val script = buildString {
+                appendLine("OWNER=\$(/system/bin/stat -c '%u:%g' $qData 2>/dev/null)")
+                for (dir in dirs) {
+                    val qDir = RootShell.quote(dir)
+                    val qFile = RootShell.quote("$dir/ClientAppSettings.json")
+                    appendLine("/system/bin/mkdir -p $qDir")
+                    appendLine("if [ -n \"\$OWNER\" ]; then /system/bin/chown \"\$OWNER\" $qDir; fi")
+                    appendLine("/system/bin/chmod 755 $qDir")
+                    appendLine("/system/bin/cp $qGlobal $qFile")
+                    appendLine("if [ -n \"\$OWNER\" ]; then /system/bin/chown \"\$OWNER\" $qFile; fi")
+                    appendLine("/system/bin/chmod 644 $qFile")
+                    appendLine("/system/bin/restorecon $qFile 2>/dev/null || true")
+                }
+            }
+            RootShell.runRaw(script, check = false, timeoutSec = 5)
+            appliedCount++
+        }
+        val fpsLabel = if (fpsCap > 0) "${fpsCap} FPS" else "FPS mặc định Noka"
+        val gfxLabel = if (lowGraphics) "đồ họa tối giản (Low GFX)" else "đồ họa mặc định"
+        return "Đã ghi ClientAppSettings ($fpsLabel, $gfxLabel) cho $appliedCount tab; bấm Rejoin tất cả để game áp dụng."
     }
 
     override fun collectDiagnostics(pkgs: Collection<String>): JSONObject? {

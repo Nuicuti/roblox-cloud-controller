@@ -15,6 +15,7 @@ data class HealthTracker(
     var teleportAtMs: Long? = null,
     val lastPeers: MutableSet<UdpPeer> = mutableSetOf(),
     var socketLostSinceMs: Long? = null,
+    var highRamHits: Int = 0,
     var authPaused: Boolean = false,
 )
 
@@ -46,6 +47,11 @@ class WatchdogEngine(
     var rejoinConfig: RejoinConfig = RejoinConfig()
     var grid: GridSettings? = null
     var windowBackup: Map<String, String>? = null
+    var optFpsCap: Int = 0
+    var optLowGraphics: Boolean = false
+    var optUpdatedAt: Long? = null
+    @Volatile
+    var streamConnected: Boolean = false
 
     private var lastAnyLaunchMs: Long? = null
     private var lastAnyLaunchPkg: String? = null
@@ -65,6 +71,11 @@ class WatchdogEngine(
             watch = obj.optBoolean("watch", false)
             rejoinConfig = RejoinConfig.fromJsonLenient(obj.optJSONObject("rejoinConfig"), watch)
             grid = GridSettings.fromJson(obj.optJSONObject("grid"))
+            obj.optJSONObject("optimization")?.let { opt ->
+                optFpsCap = opt.optInt("fpsCap", 0).coerceIn(0, 120)
+                optLowGraphics = opt.optBoolean("lowGraphics", false)
+                if (opt.has("updatedAt")) optUpdatedAt = opt.optLong("updatedAt", 0L).takeIf { it > 0L }
+            }
             obj.optString("excluded", "").split(',').map { it.trim() }.filter { it.isNotEmpty() }.forEach {
                 excludedPackages.add(it)
             }
@@ -86,6 +97,13 @@ class WatchdogEngine(
             put("watch", watch)
             put("rejoinConfig", rejoinConfig.toJson())
             grid?.let { put("grid", it.toJson()) }
+            if (optFpsCap > 0 || optLowGraphics || optUpdatedAt != null) {
+                put("optimization", JSONObject().apply {
+                    put("fpsCap", optFpsCap)
+                    put("lowGraphics", optLowGraphics)
+                    optUpdatedAt?.let { put("updatedAt", it) }
+                })
+            }
             if (excludedPackages.isNotEmpty()) {
                 put("excluded", excludedPackages.joinToString(","))
             }
@@ -280,7 +298,10 @@ class WatchdogEngine(
     }
 
     private fun launchPackage(pkg: String, placeId: String, jobId: String, forceStop: Boolean) {
-        if (forceStop) android.close(pkg)
+        if (forceStop) {
+            android.close(pkg)
+            android.clearPackageCache(pkg)
+        }
         val currentGrid = grid
         if (currentGrid != null) {
             if (!android.freeformSupported()) throw AgentException("Không khôi phục được freeform.")
@@ -510,6 +531,21 @@ class WatchdogEngine(
                 layout(gs, launch = false)
                 saveState()
                 "Đã đưa các tab đang chạy về lưới ${gs.rows}×${gs.cols} (không tắt game)."
+            }
+            "trim_ram" -> {
+                val pkgs = profiles.keys.ifEmpty { android.packages() }
+                android.trimMemoryAndClearCache(pkgs)
+            }
+            "optimize_ram" -> {
+                val fpsCap = command.optInt("fpsCap", 0).coerceIn(0, 120)
+                val lowGraphics = command.optBoolean("lowGraphics", false)
+                val pkgs = profiles.keys.ifEmpty { android.packages() }
+                val msg = android.applyClientSettings(pkgs, fpsCap, lowGraphics)
+                optFpsCap = fpsCap
+                optLowGraphics = lowGraphics
+                optUpdatedAt = System.currentTimeMillis()
+                saveState()
+                msg
             }
             "open_all", "rejoin_all" -> {
                 val forceStop = action == "rejoin_all"
@@ -779,6 +815,7 @@ class WatchdogEngine(
         val surfacesText: String?,
         val uiXml: String?,
         val accessibilityMap: Map<String, List<String>>?,
+        val rssMap: Map<String, Int>,
     )
 
     private fun captureSnapshot(nowMs: Long, cfg: RejoinConfig): CycleSnapshot {
@@ -786,9 +823,14 @@ class WatchdogEngine(
         val windowsText = try { android.windows() } catch (_: Exception) { "" }
         val surfacesText = try { android.surfaces() } catch (_: Exception) { "" }
         val accMap = android.accessibilityTexts()
+        val rssMap = if (cfg.maxRamMb > 0) {
+            try { android.processRssMb(profiles.keys) } catch (_: Exception) { emptyMap() }
+        } else {
+            emptyMap()
+        }
         // Never run blocking `uiautomator dump` inside the periodic watchdog loop;
         // UI Disconnect/CAPTCHA text reads use AccessibilityService when enabled, while WindowManager/Activity/UDP checks run lock-free.
-        return CycleSnapshot(tasksText, windowsText, surfacesText, null, accMap)
+        return CycleSnapshot(tasksText, windowsText, surfacesText, null, accMap, rssMap)
     }
 
     private fun checkRunningHealth(pkg: String, p: CloneProfile, h: HealthTracker, nowMs: Long, cfg: RejoinConfig, snap: CycleSnapshot) {
@@ -819,9 +861,26 @@ class WatchdogEngine(
         if (inBootGrace) {
             h.windowClosedSinceMs = null
             h.disconnectSinceMs = null
+            h.highRamHits = 0
             p.healthState = "booting"
             p.healthMessage = "Đang trong thời gian chờ khởi động game (Boot grace)."
             return
+        }
+
+        val ramMb = snap.rssMap[pkg]
+        if (cfg.maxRamMb > 0 && ramMb != null && ramMb >= cfg.maxRamMb) {
+            h.highRamHits += 1
+            if (h.highRamHits >= 2) {
+                h.highRamHits = 0
+                recoverPackage(
+                    pkg, p, h, nowMs, cfg,
+                    "RAM của ${p.label} đạt $ramMb MB (vượt ngưỡng ${cfg.maxRamMb} MB); đang dọn cache & rejoin.",
+                    forceStop = true,
+                )
+                return
+            }
+        } else {
+            h.highRamHits = 0
         }
 
         if (uiState == "teleporting" && cfg.teleportDetection) {
@@ -939,6 +998,7 @@ class WatchdogEngine(
             h.windowClosedSinceMs = null
             h.disconnectSinceMs = null
             h.socketLostSinceMs = null
+            h.highRamHits = 0
             h.missing += 1
             if (p.healthState != "paused_retries" || nowMs >= h.nextAllowedMs) {
                 p.healthState = if (h.missing >= 2) "crashed" else "stopped"
@@ -977,9 +1037,17 @@ class WatchdogEngine(
             put("appVersion", appVer)
             put("buildCode", buildCode)
             put("watch", watch)
+            put("streamConnected", streamConnected)
             put("excludedCount", excludedPackages.size)
             put("accessibilityEnabled", android.isAccessibilityEnabled())
             memInfo?.let { put("memory", it.toJson()) }
+            if (optFpsCap > 0 || optLowGraphics || optUpdatedAt != null) {
+                put("optimization", JSONObject().apply {
+                    put("fpsCap", optFpsCap)
+                    put("lowGraphics", optLowGraphics)
+                    optUpdatedAt?.let { put("updatedAt", it) }
+                })
+            }
             put("rejoinConfig", effectiveConfig().toJson())
             put("profiles", profJson)
             grid?.let { put("grid", it.toJson()) }
