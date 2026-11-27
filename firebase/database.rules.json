@@ -74,7 +74,7 @@
                 "createdAt": { ".validate": "newData.isNumber()" },
                 "expiresAt": { ".validate": "newData.isNumber()" },
                 "package": {
-                  ".validate": "newData.isString() && newData.val().matches(/^(free[.]noka[A-Za-z0-9_.]*|com[.]roblox[.]client([.][A-Za-z0-9_]+)*)$/)"
+                  ".validate": "newData.isString() && newData.val().matches(/^([A-Za-z][A-Za-z0-9_]*[.])*[A-Za-z0-9_]*(noka|Noka|NOKA|roblox|Roblox|ROBLOX|arceus|Arceus|ARCEUS)[A-Za-z0-9_]*([.][A-Za-z0-9_]+)*$/)"
                 },
                 "enabled": { ".validate": "newData.isBoolean()" },
                 "rows": { ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 6" },
@@ -83,7 +83,7 @@
                 "top": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 250" },
                 "bottom": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 250" },
                 "profile": {
-                  ".validate": "newData.hasChildren(['package','label','username','slot','enabled']) && newData.child('package').isString() && newData.child('package').val().matches(/^(free[.]noka[A-Za-z0-9_.]*|com[.]roblox[.]client([.][A-Za-z0-9_]+)*)$/) && newData.child('slot').isNumber() && newData.child('slot').val() >= 1 && newData.child('slot').val() <= 36 && newData.child('enabled').isBoolean()",
+                  ".validate": "newData.hasChildren(['package','label','username','slot','enabled']) && newData.child('package').isString() && newData.child('package').val().matches(/^([A-Za-z][A-Za-z0-9_]*[.])*[A-Za-z0-9_]*(noka|Noka|NOKA|roblox|Roblox|ROBLOX|arceus|Arceus|ARCEUS)[A-Za-z0-9_]*([.][A-Za-z0-9_]+)*$/) && newData.child('slot').isNumber() && newData.child('slot').val() >= 1 && newData.child('slot').val() <= 36 && newData.child('enabled').isBoolean()",
                   "placeId": { ".validate": "newData.isString() && newData.val().matches(/^[0-9]{0,20}$/)" },
                   "jobId": { ".validate": "newData.isString() && newData.val().matches(/^[A-Za-z0-9-]{0,64}$/)" }
                 },

@@ -6,7 +6,7 @@ import java.security.MessageDigest
 class AgentException(message: String) : Exception(message)
 
 object ConfigLimits {
-    val PACKAGE_REGEX = Regex("""^(?:free\.noka[A-Za-z0-9_.]*|com\.roblox\.client(?:\.[A-Za-z0-9_]+)*)$""")
+    val PACKAGE_REGEX = Regex("""^([A-Za-z][A-Za-z0-9_]*\.)*[A-Za-z0-9_]*(?:noka|roblox|arceus)[A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*$""", RegexOption.IGNORE_CASE)
     val PLACE_ID_REGEX = Regex("""^\d{0,20}$""")
     val JOB_ID_REGEX = Regex("""^[A-Za-z0-9-]{0,64}$""")
     val UUID_REGEX = Regex("""^[a-f0-9-]{36}$""")

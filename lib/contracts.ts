@@ -2,7 +2,10 @@ import { z } from "zod";
 
 export const ROOT = "nokaController/v1";
 export const deviceIdSchema = z.string().regex(/^[A-Za-z0-9_-]{10,128}$/);
-export const packageSchema = z.string().regex(/^(?:free\.noka[A-Za-z0-9_.]*|com\.roblox\.client(?:\.[A-Za-z0-9_]+)*)$/).max(160);
+export const packageSchema = z
+  .string()
+  .regex(/^([A-Za-z][A-Za-z0-9_]*\.)*[A-Za-z0-9_]*(?:noka|roblox|arceus)[A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*$/i)
+  .max(160);
 export const placeIdSchema = z.string().trim().regex(/^\d{0,20}$/);
 export const jobIdSchema = z.string().trim().regex(/^[A-Za-z0-9-]{0,64}$/);
 

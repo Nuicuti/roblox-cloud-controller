@@ -168,18 +168,27 @@ class WatchdogEngine(
             val slot = if (desired != null && desired !in occupied) desired else (1..99).first { it !in occupied }
             if (slot > 36) continue
             occupied.add(slot)
-            val label = when {
+            val label = android.appLabel(pkg) ?: when {
                 pkg.startsWith("free.noka") -> {
                     val suffix = pkg.removePrefix("free.noka")
                     if (suffix.length == 1 && suffix[0] in 'A'..'Z') "Noka ${suffix[0] - 'A' + 1}" else pkg
                 }
                 pkg == "com.roblox.client" -> "Roblox Quốc tế"
-                else -> "Roblox ${pkg.removePrefix("com.roblox.client.")}"
+                pkg.startsWith("com.roblox.client.") -> "Roblox ${pkg.removePrefix("com.roblox.client.")}"
+                else -> pkg
             }
             val user = accounts[pkg]?.username ?: ""
             profiles[pkg] = CloneProfile(packageName = pkg, label = label, username = user, slot = slot)
         }
         saveState()
+        if (installed.isEmpty()) {
+            val diag = android.scanDiagnostics()
+            return if (diag.isNotEmpty()) {
+                "Phát hiện 0 bản clone ($diag)."
+            } else {
+                "Phát hiện 0 bản clone. Cấu hình cũ được giữ nguyên."
+            }
+        }
         return "Phát hiện ${installed.size} bản clone. Cấu hình cũ được giữ nguyên."
     }
 

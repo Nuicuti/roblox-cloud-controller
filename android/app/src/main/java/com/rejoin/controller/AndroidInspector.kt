@@ -35,7 +35,7 @@ data class UdpPeer(val addrHex: String, val port: Int)
 
 object AndroidInspector {
     private val HIST_RE = Regex("""\bHist\s+#\d+:\s+ActivityRecord\{""")
-    private val TASK_PKG_RE = Regex("""\bu0\s+((?:free\.noka[A-Za-z0-9_.]*|com\.roblox\.client(?:\.[A-Za-z0-9_]+)*))/[^\s}]+\s+t(\d+)\b""")
+    private val TASK_PKG_RE = Regex("""\bu0\s+((?:[A-Za-z][A-Za-z0-9_]*\.)*[A-Za-z0-9_]*(?:noka|roblox|arceus)[A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*)/[^\s}]+\s+t(\d+)\b""", RegexOption.IGNORE_CASE)
     private val TASK_SPLIT_RE = Regex("""(?m)(?=^[ \t]*\*[ \t]*(?:Task|TaskRecord)\{)""")
     private val BOUNDS_RECT_RE = Regex("""(?:mBounds|bounds)=Rect\((\d+),\s*(\d+)\s*-\s*(\d+),\s*(\d+)\)""")
     private val BOUNDS_BRACKET_RE = Regex("""(?:mBounds|bounds)=\[(\d+),\s*(\d+)\]\[(\d+),\s*(\d+)\]""")
@@ -259,6 +259,8 @@ object AndroidInspector {
 
 interface AndroidDevice {
     fun packages(): List<String>
+    fun appLabel(pkg: String): String? = null
+    fun scanDiagnostics(): String = ""
     fun running(pkg: String): Boolean
     fun tasks(): String
     fun windows(): String
@@ -279,16 +281,63 @@ interface AndroidDevice {
 class RootAndroidDevice(private val context: Context) : AndroidDevice {
     private val uidCache = mutableMapOf<String, Int>()
 
+    private fun collectInstalledPackages(): Set<String> {
+        val found = linkedSetOf<String>()
+        try {
+            val apps = context.packageManager.getInstalledApplications(0)
+            for (ai in apps) {
+                found.add(ai.packageName)
+            }
+        } catch (_: Exception) {
+        }
+        for (args in listOf(
+            listOf("/system/bin/pm", "list", "packages", "--user", "0"),
+            listOf("/system/bin/pm", "list", "packages"),
+        )) {
+            try {
+                val res = RootShell.run(args, check = false, timeoutSec = 10)
+                if (res.exitCode == 0 && res.output.isNotEmpty()) {
+                    res.output.lines()
+                        .filter { it.startsWith("package:") }
+                        .mapTo(found) { it.removePrefix("package:").trim() }
+                }
+            } catch (_: Exception) {
+            }
+        }
+        return found
+    }
+
     override fun packages(): List<String> {
-        val r0 = RootShell.run(listOf("/system/bin/pm", "list", "packages", "--user", "0"), check = false, timeoutSec = 10)
-        val out = if (r0.exitCode == 0 && r0.output.isNotEmpty()) r0.output
-        else RootShell.run(listOf("/system/bin/pm", "list", "packages"), check = false, timeoutSec = 10).output
-        return out.lines()
-            .filter { it.startsWith("package:") }
-            .map { it.removePrefix("package:").trim() }
+        return collectInstalledPackages()
             .filter { ConfigLimits.isAllowedPackage(it) }
-            .distinct()
             .sorted()
+    }
+
+    override fun appLabel(pkg: String): String? {
+        return try {
+            val ai = context.packageManager.getApplicationInfo(pkg, 0)
+            context.packageManager.getApplicationLabel(ai).toString().trim().ifEmpty { null }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    override fun scanDiagnostics(): String {
+        val all = collectInstalledPackages()
+        val thirdParty = mutableListOf<String>()
+        try {
+            val pm = context.packageManager
+            for (ai in pm.getInstalledApplications(0)) {
+                val isSys = (ai.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                if (!isSys && ai.packageName != context.packageName) {
+                    val label = pm.getApplicationLabel(ai).toString().trim()
+                    thirdParty.add("${ai.packageName} ($label)")
+                }
+            }
+        } catch (_: Exception) {
+        }
+        val sample = thirdParty.sorted().take(10).joinToString(", ")
+        return "Tổng gói=${all.size}; app ngoài=[${sample.ifEmpty { "không có" }}]"
     }
 
     override fun running(pkg: String): Boolean {

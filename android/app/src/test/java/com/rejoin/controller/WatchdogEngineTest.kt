@@ -68,7 +68,10 @@ class WatchdogEngineTest {
     fun `package allowlist, deep link uri, bounds match, and udp uid parsing`() {
         assertTrue(ConfigLimits.isAllowedPackage("free.nokaA"))
         assertTrue(ConfigLimits.isAllowedPackage("com.roblox.client"))
+        assertTrue(ConfigLimits.isAllowedPackage("com.roblox.clien1"))
+        assertTrue(ConfigLimits.isAllowedPackage("com.noka.free1"))
         assertFalse(ConfigLimits.isAllowedPackage("com.android.settings"))
+        assertFalse(ConfigLimits.isAllowedPackage("com.rejoin.controller"))
         assertEquals("roblox://experiences/start?placeId=1730877806", ConfigLimits.buildRobloxUri("1730877806"))
         assertEquals("roblox://placeId=1730877806&gameInstanceId=abc-123", ConfigLimits.buildRobloxUri("1730877806", "abc-123"))
 

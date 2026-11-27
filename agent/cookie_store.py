@@ -8,7 +8,7 @@ import sqlite3
 import sys
 import time
 
-PACKAGE_RE = re.compile(r'(?:free\.noka[A-Za-z0-9_.]*|com\.roblox\.client(?:\.[A-Za-z0-9_]+)*)\Z')
+PACKAGE_RE = re.compile(r'(?:[A-Za-z][A-Za-z0-9_]*\.)*[A-Za-z0-9_]*(?:noka|roblox|arceus)[A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*\Z', re.IGNORECASE)
 
 
 def write_cookie(package, cookie, data_root=Path('/data/data')):

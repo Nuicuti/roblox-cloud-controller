@@ -7,7 +7,7 @@ import subprocess
 import time
 import xml.etree.ElementTree as ET
 
-PACKAGE_PATTERN = r'(?:free\.noka[A-Za-z0-9_.]*|com\.roblox\.client(?:\.[A-Za-z0-9_]+)*)'
+PACKAGE_PATTERN = r'(?:[A-Za-z][A-Za-z0-9_]*\.)*[A-Za-z0-9_]*(?:noka|Noka|NOKA|roblox|Roblox|ROBLOX|arceus|Arceus|ARCEUS)[A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*'
 PACKAGE = re.compile(PACKAGE_PATTERN + r'\Z')
 SU_BIN = next((p for p in ('/system/xbin/su', '/system/bin/su', '/sbin/su', 'su') if os.path.exists(p)), 'su')
 
