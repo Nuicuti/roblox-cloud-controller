@@ -300,7 +300,6 @@ class WatchdogEngine(
     private fun launchPackage(pkg: String, placeId: String, jobId: String, forceStop: Boolean) {
         if (forceStop) {
             android.close(pkg)
-            android.clearPackageCache(pkg)
         }
         val currentGrid = grid
         if (currentGrid != null) {

@@ -163,8 +163,8 @@ export default function Dashboard() {
   const [tab, setTab] = useState<"accounts" | "rejoin" | "activity">("accounts");
   const [rejoinDraft, setRejoinDraft] = useState<RejoinConfig>(DEFAULT_REJOIN_CONFIG);
   const [rejoinDirty, setRejoinDirty] = useState(false);
-  const [optFpsCap, setOptFpsCap] = useState(20);
-  const [optLowGraphics, setOptLowGraphics] = useState(true);
+  const [optFpsCap, setOptFpsCap] = useState(0);
+  const [optLowGraphics, setOptLowGraphics] = useState(false);
   const [optDirty, setOptDirty] = useState(false);
   const [showRejoinAdvanced, setShowRejoinAdvanced] = useState(false);
   const [showExtraBatch, setShowExtraBatch] = useState(false);
@@ -850,7 +850,6 @@ export default function Dashboard() {
                           style={{ width: "auto", marginTop: 0, padding: "4px 8px", fontSize: 11 }}
                         >
                           <option value={0}>Mặc định Noka (20 FPS)</option>
-                          <option value={10}>10 FPS (Siêu nhẹ)</option>
                           <option value={15}>15 FPS (Nhẹ AFK)</option>
                           <option value={20}>20 FPS</option>
                           <option value={30}>30 FPS</option>
@@ -866,7 +865,7 @@ export default function Dashboard() {
                             setOptLowGraphics(e.target.checked);
                           }}
                         />
-                        <span>Tắt hiệu ứng nặng (Low GFX)</span>
+                        <span>Tắt PostFX / Bóng đổ</span>
                       </label>
                       <button
                         type="button"
@@ -878,7 +877,21 @@ export default function Dashboard() {
                         }}
                         title="Ghi ClientAppSettings.json tối ưu FPS & đồ họa (bấm Rejoin tất cả để game nhận)"
                       >
-                        Áp dụng FPS / Đồ họa
+                        Áp dụng
+                      </button>
+                      <button
+                        type="button"
+                        className="text-button"
+                        disabled={blocked || !profiles.length}
+                        onClick={() => {
+                          setOptDirty(false);
+                          setOptFpsCap(0);
+                          setOptLowGraphics(false);
+                          issue({ action: "optimize_ram", fpsCap: 0, lowGraphics: false });
+                        }}
+                        title="Xóa file ClientAppSettings ghi đè để Delta/Noka chạy lại đúng như gốc"
+                      >
+                        Khôi phục gốc Noka
                       </button>
                       <label style={{ display: "flex", alignItems: "center", gap: 6, margin: 0, marginLeft: "auto" }}>
                         <span>Tự Rejoin tab khi RAM &gt;:</span>

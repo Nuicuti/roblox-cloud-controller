@@ -609,10 +609,10 @@ class WatchdogEngineTest {
         // First high RAM hit: warning counter increments, no restart yet.
         engine.watchdog(100_000)
         assertTrue(closed.isEmpty())
-        // Second consecutive high RAM hit: restarts ONLY free.nokaA + clears cache!
+        // Second consecutive high RAM hit: restarts ONLY free.nokaA without wiping game/Delta cache!
         engine.watchdog(106_000)
         assertEquals(listOf("free.nokaA"), closed)
-        assertEquals(listOf("free.nokaA"), cleared)
+        assertTrue(cleared.isEmpty())
         assertEquals(listOf("free.nokaA"), opened)
 
         // trim_ram and optimize_ram work cleanly and persist in telemetry.

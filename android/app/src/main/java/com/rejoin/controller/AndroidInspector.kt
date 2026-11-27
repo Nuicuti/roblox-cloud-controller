@@ -752,14 +752,12 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
     }
 
     override fun clearPackageCache(pkg: String) {
+        // Only trim safe WebView GPU/HTTP caches on explicit request; never wipe app assets/Delta setup cache.
         if (!ConfigLimits.isAllowedPackage(pkg)) return
         val dataDir = "/data/data/$pkg"
         val targets = listOf(
-            "$dataDir/cache",
-            "$dataDir/app_webview/Default/Cache",
             "$dataDir/app_webview/Default/GPUCache",
             "$dataDir/app_webview/Default/Code Cache",
-            "$dataDir/files/AFRequestCache",
         )
         val cmd = targets.joinToString("; ") { dir ->
             val q = RootShell.quote(dir)
@@ -777,7 +775,6 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
                 RootShell.run(listOf("/system/bin/am", "send-trim-memory", "--user", "0", pkg, "RUNNING_LOW"), check = false, timeoutSec = 3)
                 trimmed++
             }
-            clearPackageCache(pkg)
         }
         Thread.sleep(350)
         val afterUsed = memoryInfo()?.usedMb
@@ -787,12 +784,29 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
         } else {
             ""
         }
-        return "Đã gửi trim-memory tới $trimmed tab đang chạy và dọn cache cho ${pkgs.size} tab (giữ nguyên game & cookie)$diffNote."
+        return "Đã gửi trim-memory tới $trimmed tab đang chạy (giữ nguyên game, cache & cookie)$diffNote."
     }
 
     override fun applyClientSettings(pkgs: Collection<String>, fpsCap: Int, lowGraphics: Boolean): String {
         val samplePkg = pkgs.firstOrNull { ConfigLimits.isAllowedPackage(it) }
             ?: throw AgentException("Chưa có bản clone nào để áp dụng ClientAppSettings.")
+        val tmpGlobal = "/data/local/tmp/ClientAppSettings.json"
+        val qGlobal = RootShell.quote(tmpGlobal)
+
+        if (fpsCap == 0 && !lowGraphics) {
+            RootShell.runRaw("/system/bin/rm -f $qGlobal", check = false, timeoutSec = 4)
+            var cleaned = 0
+            for (pkg in pkgs) {
+                if (!ConfigLimits.isAllowedPackage(pkg)) continue
+                val dataDir = "/data/data/$pkg"
+                val f1 = RootShell.quote("$dataDir/files/exe/ClientSettings/ClientAppSettings.json")
+                val f2 = RootShell.quote("$dataDir/files/ClientSettings/ClientAppSettings.json")
+                RootShell.runRaw("/system/bin/rm -f $f1 $f2", check = false, timeoutSec = 4)
+                cleaned++
+            }
+            return "Đã xóa file ghi đè ClientAppSettings trên $cleaned tab (khôi phục mặc định gốc Noka); bấm Rejoin tất cả để áp dụng."
+        }
+
         val baseJson = try {
             val apkPath = RootShell.run(listOf("/system/bin/pm", "path", samplePkg), check = false, timeoutSec = 4).output
                 .lines()
@@ -814,24 +828,18 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
         }
 
         if (fpsCap > 0) {
-            baseJson.put("DFIntTaskSchedulerTargetFps", fpsCap.toString())
-            baseJson.put("DFIntPhysicsStepLimitMaxFPS", fpsCap.toString())
+            val safeFps = fpsCap.coerceAtLeast(15)
+            baseJson.put("DFIntTaskSchedulerTargetFps", safeFps.toString())
+            baseJson.put("DFIntPhysicsStepLimitMaxFPS", safeFps.toString())
         }
         if (lowGraphics) {
             baseJson.put("FFlagDisablePostFx", "True")
             baseJson.put("FIntRenderShadowIntensity", "0")
-            baseJson.put("DFIntDebugFRMQualityLevelOverride", "1")
-            baseJson.put("DFFlagTextureQualityOverrideEnabled", "True")
-            baseJson.put("DFIntTextureQualityOverride", "0")
             baseJson.put("FIntFRMMaxGrassDistance", "0")
             baseJson.put("FIntFRMMinGrassDistance", "0")
-            baseJson.put("FIntTerrainArraySliceSize", "4")
-            baseJson.put("DFFlagDebugRenderForceTechnologyVoxel", "True")
         }
 
         val payload = baseJson.toString(2)
-        val tmpGlobal = "/data/local/tmp/ClientAppSettings.json"
-        val qGlobal = RootShell.quote(tmpGlobal)
         val globalCmd = buildString {
             appendLine("cat <<'REJOIN_CS_EOF' > $qGlobal")
             append(payload).appendLine()
@@ -863,8 +871,8 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
             RootShell.runRaw(script, check = false, timeoutSec = 5)
             appliedCount++
         }
-        val fpsLabel = if (fpsCap > 0) "${fpsCap} FPS" else "FPS mặc định Noka"
-        val gfxLabel = if (lowGraphics) "đồ họa tối giản (Low GFX)" else "đồ họa mặc định"
+        val fpsLabel = if (fpsCap > 0) "${fpsCap.coerceAtLeast(15)} FPS" else "FPS mặc định Noka"
+        val gfxLabel = if (lowGraphics) "tắt PostFX/bóng đổ" else "đồ họa gốc"
         return "Đã ghi ClientAppSettings ($fpsLabel, $gfxLabel) cho $appliedCount tab; bấm Rejoin tất cả để game áp dụng."
     }
 
