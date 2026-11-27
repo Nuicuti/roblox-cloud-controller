@@ -47,6 +47,7 @@ class FirebaseRestClient(private val storageDir: File) {
         storageDir.mkdirs()
         if (configFile.exists() && databaseUrl.isNotEmpty() && databaseUrl != cleanUrl) {
             authFile.delete()
+            clearSharedAuth(storageDir)
             uid = ""
             token = ""
             expiryMs = 0
@@ -64,25 +65,35 @@ class FirebaseRestClient(private val storageDir: File) {
     @Synchronized
     fun authenticate() {
         if (!isConfigured()) throw AgentException("Chưa cấu hình Firebase API key / Database URL.")
-        if (token.isNotEmpty() && System.currentTimeMillis() < expiryMs) return
-        val refreshToken = if (authFile.exists()) JSONObject(authFile.readText()).optString("refreshToken", "") else ""
-        val encodedKey = URLEncoder.encode(apiKey, "UTF-8")
-        if (refreshToken.isNotEmpty()) {
-            val body = "grant_type=refresh_token&refresh_token=${URLEncoder.encode(refreshToken, "UTF-8")}"
-            val data = httpJson("https://securetoken.googleapis.com/v1/token?key=$encodedKey", "POST", body, form = true)
-                ?: throw AgentException("Không làm mới được token Firebase.")
-            token = data.getString("id_token")
-            uid = data.getString("user_id")
-            saveAuth(uid, data.getString("refresh_token"))
-            expiryMs = System.currentTimeMillis() + (data.getLong("expires_in") - 120L) * 1000L
-        } else {
-            val payload = JSONObject().put("returnSecureToken", true).toString()
-            val data = httpJson("https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=$encodedKey", "POST", payload)
-                ?: throw AgentException("Không tạo được danh tính thiết bị Firebase.")
-            token = data.getString("idToken")
-            uid = data.getString("localId")
-            saveAuth(uid, data.getString("refreshToken"))
-            expiryMs = System.currentTimeMillis() + (data.getLong("expiresIn") - 120L) * 1000L
+        synchronized(AUTH_LOCK) {
+            val cached = sharedAuth[storageDir.absolutePath]
+            if (cached != null && cached.dbUrl == databaseUrl && System.currentTimeMillis() < cached.expiryMs) {
+                uid = cached.uid
+                token = cached.token
+                expiryMs = cached.expiryMs
+                return
+            }
+            if (token.isNotEmpty() && System.currentTimeMillis() < expiryMs) return
+            val refreshToken = if (authFile.exists()) JSONObject(authFile.readText()).optString("refreshToken", "") else ""
+            val encodedKey = URLEncoder.encode(apiKey, "UTF-8")
+            if (refreshToken.isNotEmpty()) {
+                val body = "grant_type=refresh_token&refresh_token=${URLEncoder.encode(refreshToken, "UTF-8")}"
+                val data = httpJson("https://securetoken.googleapis.com/v1/token?key=$encodedKey", "POST", body, form = true)
+                    ?: throw AgentException("Không làm mới được token Firebase.")
+                token = data.getString("id_token")
+                uid = data.getString("user_id")
+                saveAuth(uid, data.getString("refresh_token"))
+                expiryMs = System.currentTimeMillis() + (data.getLong("expires_in") - 120L) * 1000L
+            } else {
+                val payload = JSONObject().put("returnSecureToken", true).toString()
+                val data = httpJson("https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=$encodedKey", "POST", payload)
+                    ?: throw AgentException("Không tạo được danh tính thiết bị Firebase.")
+                token = data.getString("idToken")
+                uid = data.getString("localId")
+                saveAuth(uid, data.getString("refreshToken"))
+                expiryMs = System.currentTimeMillis() + (data.getLong("expiresIn") - 120L) * 1000L
+            }
+            sharedAuth[storageDir.absolutePath] = CachedSession(databaseUrl, uid, token, expiryMs)
         }
     }
 
@@ -92,6 +103,18 @@ class FirebaseRestClient(private val storageDir: File) {
             put("uid", deviceUid)
             put("refreshToken", refreshToken)
         }.toString())
+    }
+
+    companion object {
+        private data class CachedSession(val dbUrl: String, val uid: String, val token: String, val expiryMs: Long)
+        private val AUTH_LOCK = Any()
+        private val sharedAuth = mutableMapOf<String, CachedSession>()
+
+        fun clearSharedAuth(storageDir: File) {
+            synchronized(AUTH_LOCK) {
+                sharedAuth.remove(storageDir.absolutePath)
+            }
+        }
     }
 
     fun request(path: String, method: String = "GET", payload: Any? = null): JSONObject? {

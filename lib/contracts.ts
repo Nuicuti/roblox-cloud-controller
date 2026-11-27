@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const ROOT = "nokaController/v1";
-export const deviceIdSchema = z.string().regex(/^[A-Za-z0-9_-]{10,128}$/);
+export const deviceIdSchema = z.string().trim().regex(/^[A-Za-z0-9_-]{10,128}$/);
 export const packageSchema = z
   .string()
   .regex(/^([A-Za-z][A-Za-z0-9_]*\.)*[A-Za-z0-9_]*(?:noka|roblox|arceus)[A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*$/i)

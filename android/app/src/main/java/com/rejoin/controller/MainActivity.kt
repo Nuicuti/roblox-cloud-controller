@@ -82,7 +82,7 @@ class MainActivity : AppCompatActivity() {
         statusText.text = "Root (su): ${if (rootOk) "OK" else "CHƯA CẤP"}  ·  " +
             "Dịch vụ ngầm: ${if (svcOk) "ĐANG CHẠY" else "ĐÃ DỪNG"}  ·  " +
             "Accessibility UI: ${if (accOk) "BẬT" else "TẮT (dùng uiautomator)"}"
-        if (RejoinForegroundService.currentUid.isNotEmpty()) {
+        if (lastPairingCode.isEmpty() && RejoinForegroundService.currentUid.isNotEmpty()) {
             uidText.text = "UID máy: ${RejoinForegroundService.currentUid}"
         }
         toggleBtn.text = if (svcOk) "DỪNG DỊCH VỤ NGẦM" else "BẬT DỊCH VỤ CHẠY NGẦM"
@@ -136,8 +136,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         statusText = box("Đang kiểm tra trạng thái...")
-        uidText = box("UID máy: (Bấm Tạo mã ghép)")
-        codeText = box("Mã ghép 32 hex: ---")
+        uidText = box("UID máy: (Bấm Tạo mã ghép)").apply {
+            typeface = Typeface.MONOSPACE
+            setTextIsSelectable(true)
+        }
+        codeText = box("Mã ghép 32 hex: ---").apply {
+            typeface = Typeface.MONOSPACE
+            setTextIsSelectable(true)
+        }
         apiKeyInput = input()
         dbUrlInput = input()
         logText = box("").apply {
