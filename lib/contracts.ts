@@ -71,6 +71,7 @@ export const commandSchema = z.discriminatedUnion("action", [
     }).strict(),
   }).strict(),
   z.object({ action: z.literal("login_all") }).strict(),
+  z.object({ action: z.literal("login"), package: packageSchema }).strict(),
   z.object({ action: z.literal("fill_login"), package: packageSchema }).strict(),
   z.object({ action: z.literal("fill_login_all") }).strict(),
   z.object({ action: z.literal("self_update") }).strict(),

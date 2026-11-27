@@ -481,6 +481,22 @@ class WatchdogEngine(
                 saveState()
                 "Đã đóng các clone đang mở, tắt lưới và khôi phục cửa sổ mặc định."
             }
+            "login" -> {
+                val pkg = command.getString("package")
+                val p = requireProfile(pkg)
+                val acc = accounts[pkg] ?: throw AgentException("${p.label} chưa gán tài khoản.")
+                if (acc.cookie.isEmpty()) throw AgentException("${p.label} chưa lưu cookie.")
+                p.enabled = true
+                p.autoReopen = true
+                val msg = try {
+                    applyCookieForProfile(p, acc)
+                } catch (e: Exception) {
+                    saveState()
+                    throw AgentException(e.message ?: "Lỗi nạp cookie")
+                }
+                openProfile(pkg, forceStop = true, nowMs = nowMs)
+                "${p.label}: $msg Đã tắt và mở lại tab."
+            }
             "login_all" -> {
                 val messages = mutableListOf<String>()
                 var failed = false
@@ -488,21 +504,12 @@ class WatchdogEngine(
                     val acc = accounts[p.packageName] ?: continue
                     if (!p.enabled || acc.cookie.isEmpty()) continue
                     try {
-                        val res = cookieWriter(acc)
-                        p.cookieStatus = res.cookieStatus
-                        p.sqliteStatus = "written"
-                        p.loginStatus = "unverified_ingame"
-                        p.loginMessage = res.message
-                        p.error = null
+                        val msg = applyCookieForProfile(p, acc)
                         enqueueLaunch(p.packageName, forceStop = false)
-                        messages.add("${p.label}: ${res.message}")
-                    } catch (e: Exception) {
-                        val msg = e.message ?: "Lỗi nạp cookie"
-                        if ("401" in msg) p.cookieStatus = "invalid" else if ("SQLite" in msg || "cookie" in msg) p.sqliteStatus = "failed"
-                        failed = true
-                        p.loginMessage = msg
-                        p.error = msg
                         messages.add("${p.label}: $msg")
+                    } catch (e: Exception) {
+                        failed = true
+                        messages.add("${p.label}: ${e.message ?: "Lỗi nạp cookie"}")
                     }
                 }
                 saveState()
@@ -552,6 +559,24 @@ class WatchdogEngine(
                 msg
             }
             else -> throw AgentException("Lệnh không được hỗ trợ.")
+        }
+    }
+
+    private fun applyCookieForProfile(p: CloneProfile, acc: AccountRecord): String {
+        return try {
+            val res = cookieWriter(acc)
+            p.cookieStatus = res.cookieStatus
+            p.sqliteStatus = "written"
+            p.loginStatus = "unverified_ingame"
+            p.loginMessage = res.message
+            p.error = null
+            res.message
+        } catch (e: Exception) {
+            val msg = e.message ?: "Lỗi nạp cookie"
+            if ("401" in msg) p.cookieStatus = "invalid" else if ("SQLite" in msg || "cookie" in msg) p.sqliteStatus = "failed"
+            p.loginMessage = msg
+            p.error = msg
+            throw e
         }
     }
 

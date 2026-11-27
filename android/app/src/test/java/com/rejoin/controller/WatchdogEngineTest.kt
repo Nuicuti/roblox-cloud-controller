@@ -439,4 +439,31 @@ class WatchdogEngineTest {
         assertTrue(resMsg.contains("player1"))
         assertEquals(listOf("free.nokaA:player1:Secret!123"), filledUsers)
     }
+
+    @Test
+    fun `single clone login injects cookie and restarts only that clone`() {
+        val dir = tempFolder.newFolder("single-login")
+        val crypto = CryptoStore(dir)
+        val fa = FakeAndroid()
+        val injected = mutableListOf<String>()
+        val engine = WatchdogEngine(
+            storageDir = dir,
+            android = fa,
+            crypto = crypto,
+            cookieWriter = { acc ->
+                injected.add("${acc.packageName}:${acc.cookie}")
+                CookieInstaller.InstallResult("valid", "Đã nạp cookie vào SQLite (${acc.username}).")
+            },
+        )
+        engine.scan()
+        engine.accounts["free.nokaB"] = AccountRecord("free.nokaB", "p2", "pw2", "_|WARNING:cookie2")
+        val msg = engine.execute(JSONObject().put("action", "login").put("package", "free.nokaB"), nowMs = 5_000)
+        assertTrue(msg.contains("Noka 2"))
+        assertTrue(msg.contains("tắt và mở lại"))
+        assertEquals(listOf("free.nokaB:_|WARNING:cookie2"), injected)
+        assertEquals("written", engine.profiles["free.nokaB"]?.sqliteStatus)
+        assertTrue(fa.closed.contains("free.nokaB"))
+        assertEquals(1, fa.opened.size)
+        assertEquals("free.nokaB", fa.opened[0].first)
+    }
 }

@@ -133,7 +133,8 @@ object CookieInstaller {
                     "cp ${RootShell.quote(localDb.absolutePath)} ${RootShell.quote(remotePath)} && " +
                     "rm -f ${RootShell.quote("$remotePath-wal")} ${RootShell.quote("$remotePath-shm")} ${RootShell.quote("$remotePath-journal")} && " +
                     "(rm -f /data/data/$pkg/shared_prefs/RBX_LOGIN* 2>/dev/null || true) && " +
-                    "chown ${RootShell.quote(uidGid)} ${RootShell.quote(remotePath)} && chmod 660 ${RootShell.quote(remotePath)} && chmod 600 ${RootShell.quote(remoteBackup)}",
+                    "chown ${RootShell.quote(uidGid)} ${RootShell.quote(remotePath)} && chmod 660 ${RootShell.quote(remotePath)} && chmod 600 ${RootShell.quote(remoteBackup)} && " +
+                    "(/system/bin/restorecon ${RootShell.quote(remotePath)} 2>/dev/null || true)",
             )
             return InstallResult(cookieStatus, "Đã nạp cookie vào SQLite ($actualUser).")
         } finally {

@@ -68,6 +68,7 @@ const actionNames: Record<string, string> = {
   restore_windowing: "Khôi phục cửa sổ",
   status: "Cập nhật trạng thái",
   set_accounts: "Gửi tài khoản E2EE",
+  login: "Nạp cookie & mở lại tab",
   login_all: "Nạp cookie và mở",
   fill_login: "Điền TK/MK đăng nhập",
   fill_login_all: "Điền TK/MK đăng nhập tất cả",
@@ -137,6 +138,12 @@ export default function Dashboard() {
   const [pair, setPair] = useState(false);
   const [credentials, setCredentials] = useState(false);
   const [editing, setEditing] = useState<Profile | null>(null);
+  const [editQuickLine, setEditQuickLine] = useState("");
+  const [editUsername, setEditUsername] = useState("");
+  const [editPassword, setEditPassword] = useState("");
+  const [editCookie, setEditCookie] = useState("");
+  const [editAutoApplyRestart, setEditAutoApplyRestart] = useState(true);
+  const [batchAutoLogin, setBatchAutoLogin] = useState(true);
   const [renamingDevice, setRenamingDevice] = useState<Device | null>(null);
   const [deletingDevice, setDeletingDevice] = useState<Device | null>(null);
   const [batchInput, setBatchInput] = useState("");
@@ -244,31 +251,55 @@ export default function Dashboard() {
   };
   const blocked = pending || demo || !current || !online;
 
+  function cleanCookieValue(raw: string) {
+    let cookie = raw.trim();
+    if (cookie.startsWith(".ROBLOSECURITY=")) cookie = cookie.slice(".ROBLOSECURITY=".length).trim();
+    return cookie.replace(/^["']|["']$/g, "").trim();
+  }
+
+  function parseCredentialLine(rawLine: string) {
+    const line = rawLine.trim();
+    if (line.startsWith("_|WARNING:") || line.startsWith(".ROBLOSECURITY=")) {
+      return { username: "", password: "", cookie: cleanCookieValue(line) };
+    }
+    const parts = line.split(":");
+    const username = parts[0]?.trim() || "";
+    let password = "";
+    let cookie = "";
+    if (parts.length >= 3) {
+      password = parts[1] ?? "";
+      cookie = parts.slice(2).join(":").trim();
+    } else if (parts.length === 2) {
+      const second = parts[1] ?? "";
+      if (second.includes("_|WARNING:") || second.trim().length > 80) {
+        cookie = second.trim();
+      } else {
+        password = second;
+      }
+    }
+    return { username, password, cookie: cleanCookieValue(cookie) };
+  }
+
   function parseBatchLines(text: string) {
     return text
       .split(/\r?\n/)
       .map(l => l.trim())
       .filter(Boolean)
-      .map((line, idx) => {
-        const parts = line.split(":");
-        const username = parts[0]?.trim() || "";
-        let password = "";
-        let cookie = "";
-        if (parts.length >= 3) {
-          password = parts[1] ?? "";
-          cookie = parts.slice(2).join(":").trim();
-        } else if (parts.length === 2) {
-          const second = parts[1] ?? "";
-          if (second.includes("_|WARNING:") || second.trim().length > 80) {
-            cookie = second.trim();
-          } else {
-            password = second;
-          }
-        }
-        if (cookie.startsWith(".ROBLOSECURITY=")) cookie = cookie.slice(".ROBLOSECURITY=".length).trim();
-        cookie = cookie.replace(/^["']|["']$/g, "").trim();
-        return { username, password, cookie, line, target: profiles[idx] };
-      });
+      .map((line, idx) => ({
+        ...parseCredentialLine(line),
+        line,
+        target: profiles[idx],
+      }));
+  }
+
+  function openEditModal(profile: Profile) {
+    setError("");
+    setEditQuickLine("");
+    setEditUsername(profile.username ?? "");
+    setEditPassword("");
+    setEditCookie("");
+    setEditAutoApplyRestart(true);
+    setEditing(profile);
   }
 
   if (initializing) {
@@ -747,39 +778,53 @@ export default function Dashboard() {
                                 )}
                               </div>
 
-                              <button className="text-button" disabled={blocked} onClick={() => setEditing(profile)}>
-                                Sửa
-                              </button>
-                              <button
-                                className="row-action"
-                                disabled={blocked || !profile.hasPassword}
-                                onClick={() => issue({ action: "fill_login", package: profile.package })}
-                                title={
-                                  profile.hasPassword
-                                    ? "Tự bấm Đăng nhập và điền tài khoản/mật khẩu"
-                                    : "Chưa lưu mật khẩu cho bản này"
-                                }
-                              >
-                                <ShieldCheck size={13} /> Điền ĐN
-                              </button>
-                              <button
-                                className="row-action"
-                                disabled={blocked}
-                                onClick={() => issue({ action: "rejoin", package: profile.package })}
-                                title="Force-stop và vào lại Place ID"
-                              >
-                                <RotateCcw size={13} /> Rejoin
-                              </button>
-                              <button
-                                className="row-action"
-                                disabled={blocked}
-                                onClick={() =>
-                                  issue({ action: profile.running ? "close" : "open", package: profile.package })
-                                }
-                              >
-                                {profile.running ? <Square size={13} /> : <ArrowRight size={15} />}
-                                {profile.running ? "Đóng" : "Mở"}
-                              </button>
+                              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
+                                <button className="text-button" disabled={blocked} onClick={() => openEditModal(profile)}>
+                                  Import / Sửa
+                                </button>
+                                <button
+                                  className="row-action"
+                                  disabled={blocked || !(profile.hasCookie ?? profile.hasAccount)}
+                                  onClick={() => issue({ action: "login", package: profile.package })}
+                                  title={
+                                    profile.hasCookie ?? profile.hasAccount
+                                      ? "Nạp cookie vào SQLite rồi tắt mở lại riêng tab này"
+                                      : "Chưa lưu cookie cho tab này"
+                                  }
+                                >
+                                  <ShieldCheck size={13} /> Nạp CK & Mở
+                                </button>
+                                <button
+                                  className="row-action"
+                                  disabled={blocked || !profile.hasPassword}
+                                  onClick={() => issue({ action: "fill_login", package: profile.package })}
+                                  title={
+                                    profile.hasPassword
+                                      ? "Thử điền TK/MK khi đã mở sẵn ô nhập"
+                                      : "Chưa lưu mật khẩu cho tab này"
+                                  }
+                                >
+                                  Điền ĐN
+                                </button>
+                                <button
+                                  className="row-action"
+                                  disabled={blocked}
+                                  onClick={() => issue({ action: "rejoin", package: profile.package })}
+                                  title="Tắt hẳn (force-stop) và mở lại riêng tab này"
+                                >
+                                  <RotateCcw size={13} /> Tắt & Mở lại
+                                </button>
+                                <button
+                                  className="row-action"
+                                  disabled={blocked}
+                                  onClick={() =>
+                                    issue({ action: profile.running ? "close" : "open", package: profile.package })
+                                  }
+                                >
+                                  {profile.running ? <Square size={13} /> : <ArrowRight size={15} />}
+                                  {profile.running ? "Tắt" : "Mở"}
+                                </button>
+                              </div>
                             </div>
                           );
                         })}
@@ -1343,18 +1388,16 @@ export default function Dashboard() {
       )}
 
       {editing && (
-        <Modal title={`Cấu hình ${editing.label}`} onClose={() => setEditing(null)}>
+        <Modal title={`Import & Cấu hình ${editing.label}`} onClose={() => setEditing(null)}>
           <form
             onSubmit={async event => {
               event.preventDefault();
               setPending(true);
               setError("");
               const fields = new FormData(event.currentTarget);
-              const username = String(fields.get("username")).trim();
-              const password = String(fields.get("password") ?? "");
-              let cookie = String(fields.get("cookie") ?? "").trim();
-              if (cookie.startsWith(".ROBLOSECURITY=")) cookie = cookie.slice(".ROBLOSECURITY=".length).trim();
-              cookie = cookie.replace(/^["']|["']$/g, "").trim();
+              const username = editUsername.trim();
+              const password = editPassword;
+              const cookie = cleanCookieValue(editCookie);
 
               const placeId = String(fields.get("placeId") ?? "").replace(/\D/g, "").slice(0, 20);
               const jobId = String(fields.get("jobId") ?? "").replace(/[^A-Za-z0-9-]/g, "").slice(0, 64);
@@ -1380,8 +1423,19 @@ export default function Dashboard() {
                   ]);
                   await send({ action: "set_accounts", sealed });
                 }
+                let actionMsg = `Đã lưu cấu hình cho ${editing.label}.`;
+                if (editAutoApplyRestart) {
+                  const hasAnyCookie = Boolean(cookie || (!password && (editing.hasCookie ?? editing.hasAccount)));
+                  if (hasAnyCookie) {
+                    await send({ action: "login", package: editing.package });
+                    actionMsg = `Đã lưu & đang nạp cookie + tắt mở lại riêng ${editing.label}.`;
+                  } else {
+                    await send({ action: "rejoin", package: editing.package });
+                    actionMsg = `Đã lưu & đang tắt mở lại riêng ${editing.label}.`;
+                  }
+                }
                 setEditing(null);
-                setNotice(`Đã lưu cấu hình cho ${editing.label}.`);
+                setNotice(actionMsg);
                 void refresh();
               } catch (problem) {
                 setError(problem instanceof Error ? problem.message : "Chưa lưu được cấu hình.");
@@ -1390,6 +1444,65 @@ export default function Dashboard() {
               }
             }}
           >
+            <div className="section-subhead">Import tài khoản & cookie riêng cho tab này</div>
+            <label>
+              Dán nhanh 1 dòng (tự tách TK / MK / Cookie)
+              <input
+                value={editQuickLine}
+                onChange={e => {
+                  const raw = e.target.value;
+                  setEditQuickLine(raw);
+                  const parsed = parseCredentialLine(raw);
+                  if (parsed.username) setEditUsername(parsed.username);
+                  if (parsed.password) setEditPassword(parsed.password);
+                  if (parsed.cookie) setEditCookie(parsed.cookie);
+                }}
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="user:pass:_|WARNING:... hoặc user:pass hoặc _|WARNING:..."
+              />
+            </label>
+            <label>
+              Tên tài khoản Roblox (Username)
+              <input
+                name="username"
+                value={editUsername}
+                onChange={e => setEditUsername(e.target.value)}
+                maxLength={80}
+                placeholder="Ví dụ: RobloxPlayer_01"
+              />
+            </label>
+            <label>
+              Mật khẩu (tùy chọn — giữ mật khẩu cũ nếu để trống)
+              <input
+                name="password"
+                type="password"
+                value={editPassword}
+                onChange={e => setEditPassword(e.target.value)}
+                placeholder="Nhập mật khẩu Roblox"
+              />
+            </label>
+            <label>
+              Cookie (.ROBLOSECURITY — giữ cookie cũ nếu để trống)
+              <textarea
+                name="cookie"
+                rows={3}
+                value={editCookie}
+                onChange={e => setEditCookie(e.target.value)}
+                spellCheck={false}
+                placeholder="_|WARNING:-DO-NOT-SHARE-THIS..."
+              />
+            </label>
+            <label className="checkbox-label" style={{ marginTop: 10 }}>
+              <input
+                type="checkbox"
+                checked={editAutoApplyRestart}
+                onChange={e => setEditAutoApplyRestart(e.target.checked)}
+              />{" "}
+              Lưu xong tự động nạp cookie (nếu có) và tắt → mở lại riêng tab này
+            </label>
+
+            <div className="section-subhead">Hiển thị & vị trí ô lưới</div>
             <label>
               Tên hiển thị
               <input name="label" defaultValue={editing.label} required maxLength={60} />
@@ -1427,22 +1540,9 @@ export default function Dashboard() {
               />
             </label>
 
-            <div className="section-subhead">Gán / Thay đổi tài khoản (tùy chọn)</div>
-            <label>
-              Tên tài khoản Roblox (Username)
-              <input name="username" defaultValue={editing.username} maxLength={80} placeholder="Ví dụ: RobloxPlayer_01" />
-            </label>
-            <label>
-              Mật khẩu (dùng để điền tự động hoặc kèm cookie)
-              <input name="password" type="password" placeholder="Nhập mật khẩu Roblox (tùy chọn)" />
-            </label>
-            <label>
-              Cookie (.ROBLOSECURITY - Điền nếu muốn nạp cookie)
-              <textarea name="cookie" rows={3} placeholder="_|WARNING:-DO-NOT-SHARE-THIS..." />
-            </label>
-
             <button className="primary full" disabled={pending} style={{ marginTop: 16 }}>
-              Lưu cấu hình & Cập nhật <Check size={16} />
+              {editAutoApplyRestart ? `Lưu, Nạp & Mở lại ${editing.label}` : "Lưu cấu hình & Tài khoản"}{" "}
+              <Check size={16} />
             </button>
             {error && <p className="error-text">{error}</p>}
           </form>
@@ -1509,9 +1609,17 @@ export default function Dashboard() {
                 if (!current?.telemetry?.publicKey) throw new Error("Máy chưa gửi khóa public key.");
                 const sealed = await sealAccounts(current.telemetry.publicKey, records);
                 await send({ action: "set_accounts", sealed });
+                const hasCookies = records.some(r => r.cookie.length > 0);
+                if (batchAutoLogin && hasCookies) {
+                  await send({ action: "login_all" });
+                }
                 setBatchInput("");
                 setCredentials(false);
-                setNotice(`Đã mã hóa và gửi ${records.length} tài khoản đến máy.`);
+                setNotice(
+                  batchAutoLogin && hasCookies
+                    ? `Đã gửi ${records.length} tài khoản và tự động nạp cookie + mở lại các tab.`
+                    : `Đã mã hóa và gửi ${records.length} tài khoản đến máy.`,
+                );
                 void refresh();
               } catch (problem) {
                 setError(problem instanceof Error ? problem.message : "Chưa gửi được danh sách tài khoản.");
@@ -1534,6 +1642,15 @@ export default function Dashboard() {
               />
             </label>
 
+            <label className="checkbox-label" style={{ marginTop: 10 }}>
+              <input
+                type="checkbox"
+                checked={batchAutoLogin}
+                onChange={e => setBatchAutoLogin(e.target.checked)}
+              />{" "}
+              Gửi xong tự động nạp cookie và mở lại các tab có cookie
+            </label>
+
             <div className="privacy-note">
               <ShieldCheck size={16} />
               Tất cả cookie/mật khẩu được mã hóa trực tiếp trong trình duyệt bằng WebCrypto (AES-256-GCM + RSA-OAEP).
@@ -1541,7 +1658,7 @@ export default function Dashboard() {
             </div>
 
             <button className="primary full" disabled={pending}>
-              Mã hóa và gửi đến máy <ArrowRight size={16} />
+              {batchAutoLogin ? "Mã hóa, Gửi & Nạp cookie mở lại" : "Mã hóa và gửi đến máy"} <ArrowRight size={16} />
             </button>
             {error && <p className="error-text">{error}</p>}
           </form>

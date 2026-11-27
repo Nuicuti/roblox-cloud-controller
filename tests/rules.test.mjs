@@ -67,6 +67,7 @@ test('rejoin config and global roblox packages pass rules while invalid bounds f
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/cfg1'), { ...baseCmd, id: 'cfg1', action: 'set_rejoin_config', config }));
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/grid1'), { ...baseCmd, id: 'grid1', action: 'grid', rows: 2, cols: 3, gap: 4, top: 24, bottom: 44, smart: true }));
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/upd1'), { ...baseCmd, id: 'upd1', action: 'self_update' }));
+  await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/login1'), { ...baseCmd, id: 'login1', action: 'login', package: 'premium.nokaA' }));
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/fill1'), { ...baseCmd, id: 'fill1', action: 'fill_login', package: 'premium.nokaA' }));
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/fill2'), { ...baseCmd, id: 'fill2', action: 'fill_login_all' }));
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/rej1'), { ...baseCmd, id: 'rej1', action: 'rejoin', package: 'com.roblox.client' }));
