@@ -738,15 +738,9 @@ class WatchdogEngine(
         val windowsText = try { android.windows() } catch (_: Exception) { "" }
         val surfacesText = try { android.surfaces() } catch (_: Exception) { "" }
         val accMap = android.accessibilityTexts()
-        var xml: String? = null
-        if (accMap == null) {
-            val cadenceMs = if (lastUiReadMs == null) 0L else maxOf(cfg.checkIntervalSec, 15) * 1000L
-            if (lastUiReadMs == null || nowMs - lastUiReadMs!! >= cadenceMs || cfg.checkIntervalSec >= 5) {
-                xml = try { android.uiTreeXml() } catch (_: Exception) { "" }
-                lastUiReadMs = nowMs
-            }
-        }
-        return CycleSnapshot(tasksText, windowsText, surfacesText, xml, accMap)
+        // Never run blocking `uiautomator dump` inside the periodic watchdog loop;
+        // UI Disconnect/CAPTCHA text reads use AccessibilityService when enabled, while WindowManager/Activity/UDP checks run lock-free.
+        return CycleSnapshot(tasksText, windowsText, surfacesText, null, accMap)
     }
 
     private fun checkRunningHealth(pkg: String, p: CloneProfile, h: HealthTracker, nowMs: Long, cfg: RejoinConfig, snap: CycleSnapshot) {
@@ -908,6 +902,8 @@ class WatchdogEngine(
 
     fun buildTelemetry(includeDiag: Boolean = true): JSONObject {
         val tasks = try { AndroidInspector.parseTasks(android.tasks()) } catch (_: Exception) { emptyMap() }
+        val rssMap = try { android.processRssMb(profiles.keys) } catch (_: Exception) { emptyMap() }
+        val memInfo = try { android.memoryInfo() } catch (_: Exception) { null }
         val profJson = JSONObject()
         for ((pkg, p) in profiles) {
             val isRunning = android.running(pkg)
@@ -920,6 +916,7 @@ class WatchdogEngine(
                 put("appStatus", if (isRunning) "running" else "stopped")
                 if (!has("healthState")) put("healthState", if (isRunning) "running" else "stopped")
                 tasks[pkg]?.let { put("taskId", it) }
+                if (isRunning) rssMap[pkg]?.let { put("ramMb", it) }
             }
             profJson.put(ConfigLimits.sha256Prefix16(pkg), item)
         }
@@ -932,6 +929,8 @@ class WatchdogEngine(
             put("appVersion", appVer)
             put("buildCode", buildCode)
             put("watch", watch)
+            put("accessibilityEnabled", android.isAccessibilityEnabled())
+            memInfo?.let { put("memory", it.toJson()) }
             put("rejoinConfig", effectiveConfig().toJson())
             put("profiles", profJson)
             grid?.let { put("grid", it.toJson()) }

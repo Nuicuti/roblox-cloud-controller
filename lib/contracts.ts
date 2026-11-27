@@ -110,6 +110,7 @@ export type Profile = z.infer<typeof profileSchema> & {
   healthMessage?: string;
   retryCount?: number;
   lastRejoinAt?: number;
+  ramMb?: number;
 };
 
 export type Result = {
@@ -131,6 +132,17 @@ export type Device = {
     appVersion?: string;
     buildCode?: number;
     watch: boolean;
+    accessibilityEnabled?: boolean;
+    memory?: {
+      totalMb: number;
+      availMb: number;
+      usedMb: number;
+      swapTotalMb?: number;
+      swapFreeMb?: number;
+      cpuCores?: number;
+      load1m?: number;
+      lowMemory?: boolean;
+    };
     rejoinConfig?: RejoinConfig;
     profiles?: Record<string, Profile>;
     grid?: { rows: number; cols: number };

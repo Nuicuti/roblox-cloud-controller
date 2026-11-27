@@ -734,6 +734,66 @@ export default function Dashboard() {
                 </div>
               </div>
 
+              {current.telemetry?.memory && (() => {
+                const mem = current.telemetry.memory;
+                const pct = mem.totalMb > 0 ? Math.min(100, Math.round((mem.usedMb / mem.totalMb) * 100)) : 0;
+                const swapUsedMb = Math.max(0, (mem.swapTotalMb ?? 0) - (mem.swapFreeMb ?? 0));
+                const color = mem.lowMemory || pct >= 88 ? "#f29494" : pct >= 75 ? "#f2cb73" : "#b6f273";
+                const fmtGb = (mb: number) => `${(mb / 1024).toFixed(2)} GB`;
+                return (
+                  <div
+                    style={{
+                      background: "#111620",
+                      border: "1px solid #252d3a",
+                      borderRadius: 10,
+                      padding: "12px 16px",
+                      marginBottom: 16,
+                      display: "grid",
+                      gap: 8,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 8,
+                        fontSize: 12,
+                      }}
+                    >
+                      <span>
+                        <b>RAM máy:</b>{" "}
+                        <span style={{ color }}>
+                          {fmtGb(mem.usedMb)} / {fmtGb(mem.totalMb)} ({pct}%)
+                        </span>{" "}
+                        · Còn trống <b>{fmtGb(mem.availMb)}</b>
+                        {(mem.swapTotalMb ?? 0) > 0 ? (
+                          <span style={{ color: "#8e96a8" }}>
+                            {" "}
+                            · ZRAM/Swap: {fmtGb(swapUsedMb)} / {fmtGb(mem.swapTotalMb ?? 0)}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span style={{ color: "#8e96a8", fontSize: 11 }}>
+                        CPU: {mem.cpuCores ?? "?"} nhân
+                        {typeof mem.load1m === "number" ? ` · Tải: ${mem.load1m.toFixed(2)}` : ""}
+                        {mem.lowMemory ? " · CẢNH BÁO THIẾU RAM" : ""}
+                      </span>
+                    </div>
+                    <div style={{ height: 6, borderRadius: 99, background: "#1d2432", overflow: "hidden" }}>
+                      <div style={{ width: `${pct}%`, height: "100%", background: color, transition: "width 0.3s" }} />
+                    </div>
+                    {current.telemetry.watch && current.telemetry.accessibilityEnabled === false && (
+                      <div style={{ fontSize: 11, color: "#f2cb73" }}>
+                        Gợi ý chống khựng: Hãy mở app <b>Rejoin Control</b> trên Redfinger → <b>Mở cài đặt Accessibility</b>{" "}
+                        và bật quyền cho <i>Rejoin Control</i>.
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
               <div className="main-columns">
                 <div className="main-panel">
                   <div className="panel-tabs">
@@ -808,6 +868,16 @@ export default function Dashboard() {
                                   <span className={`status-pill ${profile.running && online ? "green" : "gray"}`}>
                                     Tiến trình: {profile.running && online ? "Đang chạy" : "Đã tắt"}
                                   </span>
+
+                                  {profile.running && online && typeof profile.ramMb === "number" && (
+                                    <span
+                                      className={`status-pill ${
+                                        profile.ramMb >= 1000 ? "red" : profile.ramMb >= 650 ? "yellow" : "green"
+                                      }`}
+                                    >
+                                      RAM: {profile.ramMb} MB
+                                    </span>
+                                  )}
 
                                   {hs && <span className={`status-pill ${hs.tone}`}>{hs.text}</span>}
 

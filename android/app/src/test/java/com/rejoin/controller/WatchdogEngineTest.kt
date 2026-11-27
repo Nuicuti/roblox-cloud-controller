@@ -503,4 +503,31 @@ class WatchdogEngineTest {
         assertTrue(engine.profiles.getValue("free.nokaA").autoReopen)
         assertFalse(fa.opened.isEmpty())
     }
+
+    @Test
+    fun `memory parsers and telemetry include device RAM, per-clone RSS, and skip uiautomator in background loop`() {
+        val meminfo = """
+            MemTotal:        8192000 kB
+            MemFree:          512000 kB
+            MemAvailable:    2048000 kB
+            SwapTotal:       2097152 kB
+            SwapFree:        1048576 kB
+        """.trimIndent()
+        val parsed = AndroidInspector.parseProcMeminfo(meminfo, cpuCores = 8, loadAvgText = "3.45 2.80 2.10 4/500 123")
+        assertEquals(8000, parsed?.totalMb)
+        assertEquals(2000, parsed?.availMb)
+        assertEquals(6000, parsed?.usedMb)
+        assertEquals(2048, parsed?.swapTotalMb)
+        assertEquals(1024, parsed?.swapFreeMb)
+        assertEquals(8, parsed?.cpuCores)
+
+        val psOut = """
+            USER           PID  PPID        VSZ    RSS WCHAN            ADDR S NAME
+            u0_a105       6118  5225   46134592 240268 SyS_epoll_wait      0 S premium.nokaA
+            u0_a107      12446  5225   46620016 1780560 SyS_epoll_wait     0 S premium.nokaF
+        """.trimIndent()
+        val rssMap = AndroidInspector.parsePsRssMb(psOut, listOf("premium.nokaA", "premium.nokaF"))
+        assertEquals(234, rssMap["premium.nokaA"])
+        assertEquals(1738, rssMap["premium.nokaF"])
+    }
 }

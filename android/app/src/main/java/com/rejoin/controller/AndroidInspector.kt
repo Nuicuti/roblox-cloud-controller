@@ -567,6 +567,92 @@ object AndroidInspector {
             append("</map>")
         }
     }
+
+    fun parseProcMeminfo(
+        meminfoText: String?,
+        totalHintMb: Int = 0,
+        availHintMb: Int = 0,
+        lowMemory: Boolean = false,
+        cpuCores: Int = 1,
+        loadAvgText: String? = null,
+    ): SystemMemInfo? {
+        val kb = mutableMapOf<String, Long>()
+        if (!meminfoText.isNullOrEmpty()) {
+            val re = Regex("""^([A-Za-z0-9_()]+):\s+(\d+)\s*kB""", RegexOption.MULTILINE)
+            for (m in re.findAll(meminfoText)) {
+                val value = m.groupValues[2].toLongOrNull() ?: continue
+                kb[m.groupValues[1]] = value
+            }
+        }
+        val totalMb = kb["MemTotal"]?.let { (it / 1024L).toInt() }?.takeIf { it > 0 } ?: totalHintMb
+        if (totalMb <= 0) return null
+        val availMb = kb["MemAvailable"]?.let { (it / 1024L).toInt() }
+            ?: run {
+                val free = kb["MemFree"]
+                val cached = kb["Cached"] ?: 0L
+                val buffers = kb["Buffers"] ?: 0L
+                if (free != null) ((free + cached + buffers) / 1024L).toInt() else null
+            }
+            ?: availHintMb
+        val usedMb = (totalMb - availMb).coerceAtLeast(0)
+        val swapTotalMb = ((kb["SwapTotal"] ?: 0L) / 1024L).toInt()
+        val swapFreeMb = ((kb["SwapFree"] ?: 0L) / 1024L).toInt()
+        val load1m = loadAvgText?.trim()?.split(Regex("""\s+"""))?.firstOrNull()?.toDoubleOrNull() ?: 0.0
+        return SystemMemInfo(
+            totalMb = totalMb,
+            availMb = availMb.coerceIn(0, totalMb),
+            usedMb = usedMb.coerceIn(0, totalMb),
+            swapTotalMb = swapTotalMb,
+            swapFreeMb = swapFreeMb.coerceIn(0, swapTotalMb),
+            cpuCores = cpuCores.coerceAtLeast(1),
+            load1m = load1m,
+            lowMemory = lowMemory,
+        )
+    }
+
+    fun parsePsRssMb(psText: String?, pkgs: Collection<String>): Map<String, Int> {
+        if (psText.isNullOrEmpty() || pkgs.isEmpty()) return emptyMap()
+        val targetSet = pkgs.toSet()
+        val totalsKb = mutableMapOf<String, Long>()
+        val ws = Regex("""\s+""")
+        for (rawLine in psText.lineSequence()) {
+            val line = rawLine.trim()
+            if (line.isEmpty()) continue
+            val cols = line.split(ws)
+            if (cols.size < 2 || cols[0].equals("USER", true) || cols[0].equals("RSS", true)) continue
+            val pkg = cols.last().substringBefore(':')
+            if (pkg !in targetSet) continue
+            val rssKb = when {
+                cols.size == 2 -> cols[0].toLongOrNull()
+                cols.size >= 8 -> cols[4].toLongOrNull()
+                else -> null
+            } ?: continue
+            if (rssKb > 0) totalsKb[pkg] = (totalsKb[pkg] ?: 0L) + rssKb
+        }
+        return totalsKb.mapValues { (_, kb) -> (kb / 1024L).toInt() }
+    }
+}
+
+data class SystemMemInfo(
+    val totalMb: Int,
+    val availMb: Int,
+    val usedMb: Int,
+    val swapTotalMb: Int = 0,
+    val swapFreeMb: Int = 0,
+    val cpuCores: Int = 1,
+    val load1m: Double = 0.0,
+    val lowMemory: Boolean = false,
+) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("totalMb", totalMb)
+        put("availMb", availMb)
+        put("usedMb", usedMb)
+        put("swapTotalMb", swapTotalMb)
+        put("swapFreeMb", swapFreeMb)
+        put("cpuCores", cpuCores)
+        put("load1m", Math.round(load1m * 100.0) / 100.0)
+        put("lowMemory", lowMemory)
+    }
 }
 
 interface AndroidDevice {
@@ -579,6 +665,9 @@ interface AndroidDevice {
     fun surfaces(): String
     fun uiTreeXml(): String
     fun accessibilityTexts(): Map<String, List<String>>?
+    fun isAccessibilityEnabled(): Boolean = false
+    fun memoryInfo(): SystemMemInfo? = null
+    fun processRssMb(pkgs: Collection<String>): Map<String, Int> = emptyMap()
     fun udpPeers(pkg: String): Set<UdpPeer>?
     fun windowChecks(pkg: String, uiXml: String?, tasksText: String?, windowsText: String?, surfaceText: String?): WindowChecks
     fun displaySize(): Pair<Int, Int>
@@ -618,9 +707,50 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
 
     override fun lastResizeNote(): String? = resizeDiag
 
+    override fun isAccessibilityEnabled(): Boolean = RejoinAccessibilityService.isConnected()
+
+    override fun memoryInfo(): SystemMemInfo? {
+        var totalHint = 0
+        var availHint = 0
+        var lowMem = false
+        try {
+            val am = context.getSystemService(android.app.ActivityManager::class.java)
+            if (am != null) {
+                val mi = android.app.ActivityManager.MemoryInfo()
+                am.getMemoryInfo(mi)
+                totalHint = (mi.totalMem / (1024L * 1024L)).toInt()
+                availHint = (mi.availMem / (1024L * 1024L)).toInt()
+                lowMem = mi.lowMemory
+            }
+        } catch (_: Exception) {
+        }
+        val memText = try {
+            File("/proc/meminfo").readText()
+        } catch (_: Exception) {
+            RootShell.run(listOf("/system/bin/cat", "/proc/meminfo"), check = false, timeoutSec = 3).output
+        }
+        val loadText = try {
+            File("/proc/loadavg").readText()
+        } catch (_: Exception) {
+            ""
+        }
+        val cores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+        return AndroidInspector.parseProcMeminfo(memText, totalHint, availHint, lowMem, cores, loadText)
+    }
+
+    override fun processRssMb(pkgs: Collection<String>): Map<String, Int> {
+        if (pkgs.isEmpty()) return emptyMap()
+        val psOut = RootShell.runRaw(
+            "(/system/bin/ps -A -o RSS,NAME 2>/dev/null || /system/bin/ps -A)",
+            check = false,
+            timeoutSec = 4,
+        ).output
+        return AndroidInspector.parsePsRssMb(psOut, pkgs)
+    }
+
     override fun collectDiagnostics(pkgs: Collection<String>): JSONObject? {
-        val now = System.currentTimeMillis()
-        if ((cachedDiag == null || now - lastDiagMs > 60_000L) && !diagRefreshing) {
+        // Only auto-collect full apk/dumpsys diagnostics once per process; avoid hammering SurfaceFlinger every 60s.
+        if (cachedDiag == null && !diagRefreshing) {
             diagRefreshing = true
             Thread({
                 try {
