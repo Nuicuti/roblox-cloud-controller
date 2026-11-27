@@ -250,7 +250,7 @@ export default function Dashboard() {
     void refresh();
     const timer = setInterval(() => {
       void refresh();
-    }, hasActiveCommand ? 1_000 : 8_000);
+    }, hasActiveCommand ? 450 : 8_000);
     return () => clearInterval(timer);
   }, [refresh, hasActiveCommand]);
 
@@ -259,11 +259,30 @@ export default function Dashboard() {
     setPending(true);
     setError("");
     try {
-      await api("/api/commands", { deviceId: current.id, command });
+      const queued = (await api("/api/commands", { deviceId: current.id, command })) as {
+        id?: string;
+        action?: string;
+        createdAt?: number;
+      };
+      if (queued.id) {
+        const queuedEntry: Result = {
+          id: queued.id,
+          action: queued.action ?? command.action,
+          createdAt: queued.createdAt ?? Date.now(),
+          status: "queued",
+        };
+        setDevices(prev =>
+          prev.map(d =>
+            d.id === current.id
+              ? { ...d, results: { ...(d.results ?? {}), [queuedEntry.id]: queuedEntry } }
+              : d,
+          ),
+        );
+      }
       setNotice(`Đã gửi “${actionNames[command.action] ?? command.action}”. Chờ máy phản hồi trong nhật ký.`);
-      void refresh();
-      setTimeout(() => void refresh(), 550);
-      setTimeout(() => void refresh(), 1500);
+      setTimeout(() => void refresh(), 220);
+      setTimeout(() => void refresh(), 650);
+      setTimeout(() => void refresh(), 1200);
     } catch (problem) {
       setError(problem instanceof Error ? problem.message : "Không gửi được lệnh.");
       throw problem;

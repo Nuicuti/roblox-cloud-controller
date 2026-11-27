@@ -157,7 +157,7 @@ class FirebaseRestClient(private val storageDir: File) {
                 conn = (URL(url).openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
                     connectTimeout = 15_000
-                    readTimeout = 45_000
+                    readTimeout = 35_000
                     setRequestProperty("Accept", "text/event-stream")
                     setRequestProperty("Cache-Control", "no-cache")
                 }
@@ -190,7 +190,7 @@ class FirebaseRestClient(private val storageDir: File) {
                                 dataBuf.setLength(0)
                                 when (eventName) {
                                     "put", "patch" -> {
-                                        if (data.isNotEmpty() && !data.endsWith("\"data\":null}")) {
+                                        if (data.isNotEmpty() && !Regex(""""data"\s*:\s*null\}$""").containsMatchIn(data)) {
                                             onChange()
                                         }
                                     }
@@ -198,8 +198,9 @@ class FirebaseRestClient(private val storageDir: File) {
                                         clearSharedAuth(storageDir)
                                         token = ""
                                         expiryMs = 0L
+                                        val reason = eventName
                                         eventName = ""
-                                        throw RuntimeException("SSE $eventName")
+                                        throw RuntimeException("SSE $reason")
                                     }
                                 }
                                 eventName = ""

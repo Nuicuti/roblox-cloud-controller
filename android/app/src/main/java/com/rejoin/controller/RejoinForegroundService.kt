@@ -16,6 +16,8 @@ import java.security.SecureRandom
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 class RejoinForegroundService : Service() {
     @Volatile
@@ -99,6 +101,19 @@ class RejoinForegroundService : Service() {
         RootShell.hardenRuntime(packageName)
         val crypto = CryptoStore(dataDir)
         crypto.ensureKeyPair()
+        val engineLock = Any()
+        val launchLock = Any()
+        val wakeLockObj = Object()
+        val pendingCmdRequests = AtomicInteger(0)
+        val wakePending = AtomicBoolean(true)
+        val shouldYield = { !running || wakePending.get() || pendingCmdRequests.get() > 0 }
+        fun signalCommand() {
+            synchronized(wakeLockObj) {
+                wakePending.set(true)
+                wakeLockObj.notifyAll()
+            }
+        }
+
         val engine = WatchdogEngine(
             storageDir = dataDir,
             android = RootAndroidDevice(applicationContext),
@@ -114,24 +129,14 @@ class RejoinForegroundService : Service() {
                 }
                 msg to hook
             },
+            shouldYieldForCommand = shouldYield,
         )
         try {
             val cleaned = engine.sanitizeBrokenTasks()
             if (cleaned > 0) appendLog("Đã dọn $cleaned cửa sổ bị lệch tọa độ âm.")
             appendLog(engine.scan())
-            engine.refreshWindowDiag()
         } catch (e: Exception) {
             appendLog("[!] Quét clone ban đầu lỗi: ${e.message}")
-        }
-
-        val engineLock = Any()
-        val wakeLockObj = Object()
-        var wakePending = true
-        fun signalCommand() {
-            synchronized(wakeLockObj) {
-                wakePending = true
-                wakeLockObj.notifyAll()
-            }
         }
 
         var lastReportMs = 0L
@@ -139,7 +144,7 @@ class RejoinForegroundService : Service() {
         var paired = false
         var retryStep = 0
         var lastInboxErrorMs = 0L
-        appendLog("Agent APK đang chạy ngầm (kèm SSE nhận lệnh tức thì).")
+        appendLog("Agent APK đang chạy ngầm (SSE + non-blocking lock).")
         updateNotification("Đang giám sát ${engine.profiles.size} clone · Root OK")
 
         val streamClient = FirebaseRestClient(dataDir)
@@ -178,35 +183,55 @@ class RejoinForegroundService : Service() {
             while (running) {
                 try {
                     synchronized(wakeLockObj) {
-                        if (!wakePending) {
-                            wakeLockObj.wait(4000L)
+                        if (!wakePending.get()) {
+                            val waitMs = if (engine.streamConnected) 3000L else 1200L
+                            wakeLockObj.wait(waitMs)
                         }
-                        wakePending = false
+                        wakePending.set(false)
                     }
                     if (!running) break
                     if (!paired) continue
 
-                    val inbox = cmdClient.device("inbox")
-                    if (inbox != null) {
-                        val commands = inbox.keys().asSequence()
-                            .mapNotNull { inbox.optJSONObject(it) }
-                            .sortedBy { it.optLong("createdAt", 0) }
-                            .toList()
-                        for (cmd in commands) {
-                            if (!running) break
-                            appendLog("-> Nhận lệnh: ${cmd.optString("action")}")
-                            synchronized(engineLock) {
-                                engine.processCommand(cmdClient, cmd)
+                    var processedAny = false
+                    pendingCmdRequests.incrementAndGet()
+                    try {
+                        while (running && paired) {
+                            val inbox = cmdClient.device("inbox") ?: break
+                            val commands = inbox.keys().asSequence()
+                                .mapNotNull { inbox.optJSONObject(it) }
+                                .sortedBy { it.optLong("createdAt", 0) }
+                                .toList()
+                            if (commands.isEmpty()) break
+                            for (cmd in commands) {
+                                if (!running) break
+                                val action = cmd.optString("action")
+                                appendLog("-> Nhận lệnh: $action")
+                                if (WatchdogEngine.needsLaunchLock(action)) {
+                                    synchronized(launchLock) {
+                                        synchronized(engineLock) {
+                                            engine.processCommand(cmdClient, cmd)
+                                        }
+                                    }
+                                } else {
+                                    synchronized(engineLock) {
+                                        engine.processCommand(cmdClient, cmd)
+                                    }
+                                }
+                                processedAny = true
+                                lastReportMs = 0L
                             }
-                            lastReportMs = 0L
                         }
-                        if (commands.isNotEmpty()) {
-                            val snap = synchronized(engineLock) { engine.buildTelemetry(includeDiag = true) }
-                            try {
-                                cmdClient.device("telemetry", "PUT", snap)
-                                lastReportMs = System.currentTimeMillis()
-                            } catch (_: Exception) {
-                            }
+                    } finally {
+                        pendingCmdRequests.decrementAndGet()
+                    }
+                    if (processedAny && !shouldYield()) {
+                        val pkgsSnap = synchronized(engineLock) { engine.profiles.keys.toList() }
+                        val inputs = engine.collectTelemetryInputs(pkgsSnap, includeDiag = false)
+                        val snap = synchronized(engineLock) { engine.buildTelemetryFromInputs(inputs, includeDiag = false) }
+                        try {
+                            cmdClient.device("telemetry", "PUT", snap)
+                            lastReportMs = System.currentTimeMillis()
+                        } catch (_: Exception) {
                         }
                     }
                 } catch (_: InterruptedException) {
@@ -248,19 +273,18 @@ class RejoinForegroundService : Service() {
                     }
                 }
 
-                synchronized(engineLock) {
-                    engine.watchdog(System.currentTimeMillis())
+                if (!shouldYield()) {
+                    engine.runWatchdogNonBlocking(System.currentTimeMillis(), engineLock, launchLock)
                 }
 
                 val now = System.currentTimeMillis()
-                if (now - lastReportMs > 12_000L) {
-                    val fullTele = synchronized(engineLock) { engine.buildTelemetry(includeDiag = true) }
+                if (now - lastReportMs > 12_000L && !shouldYield()) {
+                    val pkgsSnap = synchronized(engineLock) { engine.profiles.keys.toList() }
+                    val inputs = engine.collectTelemetryInputs(pkgsSnap, includeDiag = false)
+                    val fastTele = synchronized(engineLock) { engine.buildTelemetryFromInputs(inputs, includeDiag = false) }
                     try {
-                        firebase.device("telemetry", "PUT", fullTele)
-                    } catch (teleErr: Exception) {
-                        appendLog("[!] Telemetry chẩn đoán lỗi (${teleErr.message}); gửi bản chuẩn...")
-                        val basicTele = synchronized(engineLock) { engine.buildTelemetry(includeDiag = false) }
-                        firebase.device("telemetry", "PUT", basicTele)
+                        firebase.device("telemetry", "PUT", fastTele)
+                    } catch (_: Exception) {
                     }
                     lastReportMs = System.currentTimeMillis()
                     val (activeCount, totalCount) = synchronized(engineLock) {
@@ -276,8 +300,8 @@ class RejoinForegroundService : Service() {
             } catch (e: Exception) {
                 appendLog("[!] Cảnh báo: ${e.message}")
                 try {
-                    synchronized(engineLock) {
-                        engine.watchdog(System.currentTimeMillis())
+                    if (!shouldYield()) {
+                        engine.runWatchdogNonBlocking(System.currentTimeMillis(), engineLock, launchLock)
                     }
                 } catch (_: Exception) {
                 }

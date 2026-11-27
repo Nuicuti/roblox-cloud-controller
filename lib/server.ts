@@ -56,15 +56,19 @@ export async function operator(request: Request) {
   if (!user.email || user.firebase.sign_in_provider === "anonymous") {
     throw new HttpError(403, "Tài khoản này chưa được phép điều khiển.");
   }
-  const delegated = (await db.request(`${ROOT}/operators/${user.uid}`)) === true;
-  if (!delegated) {
-    let ownerEmail: string | null = null;
-    try {
-      ownerEmail = await db.request(`${ROOT}/ownerEmail`);
-    } catch {}
-    const allowed = [ownerEmail?.toLowerCase(), process.env.OWNER_EMAIL?.toLowerCase()].filter(Boolean);
-    if (!user.email_verified || !allowed.includes(user.email.toLowerCase())) {
-      throw new HttpError(403, "Tài khoản này chưa được phép điều khiển.");
+  const envOwner = process.env.OWNER_EMAIL?.trim().toLowerCase();
+  const isEnvOwner = Boolean(envOwner && user.email_verified && user.email.toLowerCase() === envOwner);
+  if (!isEnvOwner) {
+    const delegated = (await db.request(`${ROOT}/operators/${user.uid}`)) === true;
+    if (!delegated) {
+      let ownerEmail: string | null = null;
+      try {
+        ownerEmail = await db.request(`${ROOT}/ownerEmail`);
+      } catch {}
+      const allowed = [ownerEmail?.toLowerCase(), envOwner].filter(Boolean);
+      if (!user.email_verified || !allowed.includes(user.email.toLowerCase())) {
+        throw new HttpError(403, "Tài khoản này chưa được phép điều khiển.");
+      }
     }
   }
   return { user, db };

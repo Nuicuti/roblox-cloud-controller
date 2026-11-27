@@ -625,4 +625,62 @@ class WatchdogEngineTest {
         assertEquals(15, tele.getJSONObject("optimization").getInt("fpsCap"))
         assertTrue(tele.getJSONObject("optimization").getBoolean("lowGraphics"))
     }
+
+    @Test
+    fun `non-blocking watchdog releases stateLock while launching and commands preempt without blocking`() {
+        val dir = tempFolder.newFolder("nonblock-watchdog")
+        val crypto = CryptoStore(dir)
+        val launchStarted = java.util.concurrent.CountDownLatch(1)
+        val releaseLaunch = java.util.concurrent.CountDownLatch(1)
+        val stateLock = Any()
+        val launchLock = Any()
+        val dev = object : AndroidDevice {
+            override fun packages() = listOf("free.nokaA", "free.nokaB")
+            override fun running(pkg: String) = false
+            override fun tasks() = ""
+            override fun windows() = ""
+            override fun surfaces() = ""
+            override fun uiTreeXml() = ""
+            override fun accessibilityTexts() = emptyMap<String, List<String>>()
+            override fun udpPeers(pkg: String) = emptySet<UdpPeer>()
+            override fun windowChecks(pkg: String, uiXml: String?, tasksText: String?, windowsText: String?, surfaceText: String?) =
+                WindowChecks(false, false, false, false)
+            override fun displaySize() = 1280 to 720
+            override fun freeformSupported() = true
+            override fun open(pkg: String, freeform: Boolean, placeId: String, jobId: String) {
+                launchStarted.countDown()
+                releaseLaunch.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            }
+            override fun close(pkg: String) {}
+            override fun resize(pkg: String, bounds: RectBounds, launch: Boolean, placeId: String, jobId: String): Int {
+                if (launch) open(pkg, true, placeId, jobId)
+                return 1
+            }
+            override fun setFreeformFlags(enabled: Boolean, previousBackup: Map<String, String>?) = emptyMap<String, String>()
+            override fun deviceInfo() = "Redfinger Test" to "10"
+        }
+        val engine = WatchdogEngine(storageDir = dir, android = dev, crypto = crypto)
+        engine.scan()
+        val cfg = RejoinConfig(enabled = true, placeId = "2809202155", checkIntervalSec = 5, delayBetweenClonesSec = 15)
+        engine.execute(JSONObject().put("action", "set_rejoin_config").put("config", cfg.toJson()))
+        engine.execute(JSONObject().put("action", "set_watch").put("enabled", true))
+
+        // First missing check + second missing check schedules launch outside stateLock
+        engine.runWatchdogNonBlocking(100_000, stateLock, launchLock)
+        val worker = Thread {
+            engine.runWatchdogNonBlocking(106_000, stateLock, launchLock)
+        }.apply { start() }
+
+        assertTrue(launchStarted.await(2, java.util.concurrent.TimeUnit.SECONDS))
+        // While watchdog is mid-launch outside stateLock, set_watch command must acquire stateLock immediately!
+        val startWait = System.currentTimeMillis()
+        synchronized(stateLock) {
+            val msg = engine.execute(JSONObject().put("action", "set_watch").put("enabled", false))
+            assertTrue(msg.contains("tắt Auto-rejoin"))
+        }
+        val lockElapsedMs = System.currentTimeMillis() - startWait
+        assertTrue("Expected stateLock immediately, took ${lockElapsedMs}ms", lockElapsedMs < 500)
+        releaseLaunch.countDown()
+        worker.join(2000)
+    }
 }

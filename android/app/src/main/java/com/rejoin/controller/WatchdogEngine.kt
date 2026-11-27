@@ -2,6 +2,7 @@ package com.rejoin.controller
 
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.atomic.AtomicLong
 
 data class HealthTracker(
     var missing: Int = 0,
@@ -21,6 +22,27 @@ data class HealthTracker(
 
 data class QueuedLaunch(val packageName: String, val forceStop: Boolean)
 
+data class DeferredLaunch(
+    val pkg: String,
+    val placeId: String,
+    val jobId: String,
+    val forceStop: Boolean,
+    val reason: String,
+    val epoch: Long,
+    val fromQueue: Boolean,
+)
+
+data class TelemetryInputs(
+    val tasks: Map<String, Int>,
+    val rssMap: Map<String, Int>,
+    val runningMap: Map<String, Boolean>,
+    val memInfo: SystemMemInfo?,
+    val deviceInfo: Pair<String, String>,
+    val freeform: Boolean,
+    val accessibilityEnabled: Boolean,
+    val diag: JSONObject?,
+)
+
 class WatchdogEngine(
     private val storageDir: File,
     private val android: AndroidDevice,
@@ -31,7 +53,37 @@ class WatchdogEngine(
     private val appVersionInfo: () -> Pair<Long, String> = { 1L to "2.0.0" },
     private val selfUpdater: (() -> Pair<String, (() -> Unit)?>)? = null,
     private val loginFiller: ((AccountRecord) -> FillLoginResult)? = null,
+    private val shouldYieldForCommand: () -> Boolean = { false },
 ) {
+    companion object {
+        private val FAST_ACK_ACTIONS = setOf(
+            "set_watch",
+            "set_rejoin_config",
+            "profile",
+            "minimize_all",
+            "status",
+        )
+        private val LAUNCH_LOCK_ACTIONS = setOf(
+            "open_all",
+            "rejoin_all",
+            "close_all",
+            "open",
+            "close",
+            "rejoin",
+            "fullscreen",
+            "retile",
+            "grid",
+            "restore_windowing",
+            "login",
+            "login_all",
+            "fill_login",
+            "fill_login_all",
+        )
+
+        fun needsLaunchLock(action: String): Boolean = action in LAUNCH_LOCK_ACTIONS
+    }
+
+    private val launchEpoch = AtomicLong(0L)
     private val stateFile = File(storageDir, "state.json")
     private val accountsFile = File(storageDir, "accounts.json")
     private val journalFile = File(storageDir, "journal.json")
@@ -415,6 +467,7 @@ class WatchdogEngine(
                 rejoinConfig = rejoinConfig.copy(enabled = enabled)
                 health.clear()
                 launchQueue.clear()
+                if (!enabled) launchEpoch.incrementAndGet()
                 saveState()
                 if (enabled) "Đã bật Auto-rejoin." else "Đã tắt Auto-rejoin."
             }
@@ -422,6 +475,7 @@ class WatchdogEngine(
                 val cfg = RejoinConfig.fromJsonStrict(command.getJSONObject("config"))
                 rejoinConfig = cfg
                 watch = cfg.enabled
+                if (!cfg.enabled) launchEpoch.incrementAndGet()
                 for (h in health.values) {
                     h.lastCheckMs = null
                     h.windowClosedSinceMs = null
@@ -504,6 +558,7 @@ class WatchdogEngine(
             }
             "close_all" -> {
                 launchQueue.clear()
+                launchEpoch.incrementAndGet()
                 var closedCount = 0
                 for (p in profiles.values.sortedBy { it.slot }) {
                     p.autoReopen = false
@@ -601,6 +656,7 @@ class WatchdogEngine(
                 "Đã bật cờ cửa sổ tự do. Một số máy cần khởi động lại Redfinger để áp dụng."
             }
             "restore_windowing" -> {
+                launchEpoch.incrementAndGet()
                 if (windowBackup != null) {
                     android.setFreeformFlags(false, windowBackup)
                 }
@@ -817,13 +873,15 @@ class WatchdogEngine(
         val rssMap: Map<String, Int>,
     )
 
-    private fun captureSnapshot(nowMs: Long, cfg: RejoinConfig): CycleSnapshot {
+    private fun captureSnapshot(nowMs: Long, cfg: RejoinConfig, targetPkgs: Collection<String> = profiles.keys): CycleSnapshot {
         val tasksText = try { android.tasks() } catch (_: Exception) { "" }
+        if (shouldYieldForCommand()) return CycleSnapshot(tasksText, "", "", null, null, emptyMap())
         val windowsText = try { android.windows() } catch (_: Exception) { "" }
+        if (shouldYieldForCommand()) return CycleSnapshot(tasksText, windowsText, "", null, null, emptyMap())
         val surfacesText = try { android.surfaces() } catch (_: Exception) { "" }
         val accMap = android.accessibilityTexts()
-        val rssMap = if (cfg.maxRamMb > 0) {
-            try { android.processRssMb(profiles.keys) } catch (_: Exception) { emptyMap() }
+        val rssMap = if (cfg.maxRamMb > 0 && targetPkgs.isNotEmpty() && !shouldYieldForCommand()) {
+            try { android.processRssMb(targetPkgs) } catch (_: Exception) { emptyMap() }
         } else {
             emptyMap()
         }
@@ -832,7 +890,135 @@ class WatchdogEngine(
         return CycleSnapshot(tasksText, windowsText, surfacesText, null, accMap, rssMap)
     }
 
-    private fun checkRunningHealth(pkg: String, p: CloneProfile, h: HealthTracker, nowMs: Long, cfg: RejoinConfig, snap: CycleSnapshot) {
+    private fun scheduleRecoveryStateLocked(
+        pkg: String,
+        p: CloneProfile,
+        h: HealthTracker,
+        nowMs: Long,
+        cfg: RejoinConfig,
+        reason: String,
+        forceStop: Boolean,
+        epoch: Long,
+        fromQueue: Boolean,
+    ): DeferredLaunch? {
+        if (!canLaunch(pkg, h, nowMs, cfg)) return null
+        val windowMs = maxOf(600_000L, cfg.maxRejoinIntervalSec * 2000L)
+        while (h.attempts.isNotEmpty() && nowMs - h.attempts.first() > windowMs) {
+            h.attempts.removeFirst()
+        }
+        if (cfg.retryAttempts > 0 && h.attempts.size >= cfg.retryAttempts) {
+            p.healthState = "paused_retries"
+            p.healthMessage = "Đã đạt giới hạn ${cfg.retryAttempts} lần thử lại; tạm nghỉ để tránh lặp mở vô hạn."
+            p.error = p.healthMessage
+            h.nextAllowedMs = h.attempts.first() + maxOf(600_000L, cfg.maxRejoinIntervalSec * 1000L)
+            return null
+        }
+        h.healthySinceMs = null
+        h.attempts.addLast(nowMs)
+        val step = minOf(h.attempts.size - 1, 10)
+        val backoffMs = cfg.backoffSec * 1000L * (1L shl step)
+        val waitMs = minOf(cfg.maxRejoinIntervalSec * 1000L, backoffMs)
+        h.nextAllowedMs = nowMs + maxOf(waitMs, cfg.delayAfterLaunchSec * 1000L)
+        h.windowClosedSinceMs = null
+        h.disconnectSinceMs = null
+        h.socketLostSinceMs = null
+        h.missing = 0
+        val (placeId, jobId) = effectiveTarget(p, cfg)
+        h.lastLaunchMs = nowMs
+        lastAnyLaunchMs = nowMs
+        lastAnyLaunchPkg = pkg
+        p.retryCount = h.attempts.size
+        p.lastRejoinAt = System.currentTimeMillis()
+        p.healthState = "booting"
+        p.healthMessage = reason
+        p.error = null
+        return DeferredLaunch(pkg, placeId, jobId, forceStop, reason, epoch, fromQueue)
+    }
+
+    private fun pickReadyQueuedLaunchLocked(nowMs: Long, cfg: RejoinConfig, epoch: Long): DeferredLaunch? {
+        if (launchQueue.isEmpty()) return null
+        repeat(launchQueue.size) {
+            val item = launchQueue.first()
+            val h = health.getOrPut(item.packageName) { HealthTracker() }
+            if (canLaunch(item.packageName, h, nowMs, cfg)) {
+                launchQueue.removeFirst()
+                val p = profiles[item.packageName]
+                if (p != null) {
+                    p.enabled = true
+                    p.error = null
+                    p.healthState = "booting"
+                    p.healthMessage = "Đang khởi chạy vào game."
+                    val (placeId, jobId) = effectiveTarget(p, cfg)
+                    h.lastLaunchMs = nowMs
+                    lastAnyLaunchMs = nowMs
+                    lastAnyLaunchPkg = item.packageName
+                    p.lastRejoinAt = System.currentTimeMillis()
+                    saveState()
+                    return DeferredLaunch(item.packageName, placeId, jobId, item.forceStop, p.healthMessage, epoch, fromQueue = true)
+                }
+                return null
+            }
+            launchQueue.addLast(launchQueue.removeFirst())
+        }
+        return null
+    }
+
+    private fun executeDeferredLaunch(launch: DeferredLaunch, stateLock: Any, launchLock: Any) {
+        synchronized(launchLock) {
+            synchronized(stateLock) {
+                if (launch.epoch != launchEpoch.get()) return
+                val p = profiles[launch.pkg] ?: return
+                if (!p.enabled || !p.autoReopen) return
+                if (!launch.fromQueue && !watch) return
+            }
+            try {
+                launchPackage(launch.pkg, launch.placeId, launch.jobId, launch.forceStop)
+                synchronized(stateLock) {
+                    val p = profiles[launch.pkg] ?: return@synchronized
+                    val doneNow = System.currentTimeMillis()
+                    if (launch.fromQueue) {
+                        health[launch.pkg] = HealthTracker(lastCheckMs = doneNow, lastLaunchMs = doneNow)
+                    } else {
+                        health.getOrPut(launch.pkg) { HealthTracker() }.lastLaunchMs = doneNow
+                    }
+                    lastAnyLaunchMs = doneNow
+                    lastAnyLaunchPkg = launch.pkg
+                    p.lastRejoinAt = doneNow
+                    p.error = null
+                    saveState()
+                }
+            } catch (e: Exception) {
+                synchronized(stateLock) {
+                    profiles[launch.pkg]?.apply {
+                        error = e.message
+                        healthMessage = e.message
+                    }
+                    saveState()
+                }
+            }
+        }
+    }
+
+    private fun checkRunningHealth(
+        pkg: String,
+        p: CloneProfile,
+        h: HealthTracker,
+        nowMs: Long,
+        cfg: RejoinConfig,
+        snap: CycleSnapshot,
+        prefetchedPeers: Set<UdpPeer>? = null,
+        usePrefetchedPeers: Boolean = false,
+        onDeferRecovery: ((DeferredLaunch) -> Unit)? = null,
+        epoch: Long = 0L,
+    ) {
+        fun triggerRecovery(reason: String, forceStop: Boolean) {
+            if (onDeferRecovery != null) {
+                scheduleRecoveryStateLocked(pkg, p, h, nowMs, cfg, reason, forceStop, epoch, fromQueue = false)?.let(onDeferRecovery)
+            } else {
+                recoverPackage(pkg, p, h, nowMs, cfg, reason, forceStop)
+            }
+        }
+
         val inBootGrace = h.lastLaunchMs != null && nowMs - h.lastLaunchMs!! < cfg.bootGraceSec * 1000L
         val tid = AndroidInspector.parseTasks(snap.tasksText)[pkg]
         val bounds = tid?.let { AndroidInspector.taskBounds(snap.tasksText, it).first }
@@ -871,9 +1057,8 @@ class WatchdogEngine(
             h.highRamHits += 1
             if (h.highRamHits >= 2) {
                 h.highRamHits = 0
-                recoverPackage(
-                    pkg, p, h, nowMs, cfg,
-                    "RAM của ${p.label} đạt $ramMb MB (vượt ngưỡng ${cfg.maxRamMb} MB); đang dọn cache & rejoin.",
+                triggerRecovery(
+                    "RAM của ${p.label} đạt $ramMb MB (vượt ngưỡng ${cfg.maxRamMb} MB); đang khởi động lại tab.",
                     forceStop = true,
                 )
                 return
@@ -889,7 +1074,9 @@ class WatchdogEngine(
             p.healthMessage = "Phát hiện đang dịch chuyển server (Teleport grace)."
         }
 
-        val peers = if (cfg.teleportDetection || cfg.networkTimeoutSec > 0) {
+        val peers = if (usePrefetchedPeers) {
+            prefetchedPeers
+        } else if (cfg.teleportDetection || cfg.networkTimeoutSec > 0) {
             try { android.udpPeers(pkg) } catch (_: Exception) { null }
         } else null
 
@@ -910,7 +1097,7 @@ class WatchdogEngine(
                     if (h.socketLostSinceMs == null) h.socketLostSinceMs = nowMs
                     else if (nowMs - h.socketLostSinceMs!! >= cfg.networkTimeoutSec * 1000L) {
                         p.healthState = "disconnected"
-                        recoverPackage(pkg, p, h, nowMs, cfg, "Mất kết nối mạng UDP quá thời gian chờ; đang rejoin.", forceStop = true)
+                        triggerRecovery("Mất kết nối mạng UDP quá thời gian chờ; đang rejoin.", forceStop = true)
                         return
                     }
                 }
@@ -929,7 +1116,7 @@ class WatchdogEngine(
                 p.healthState = "disconnected"
                 p.healthMessage = "Phát hiện màn hình mất kết nối; đang chờ xác nhận."
                 if (nowMs - h.disconnectSinceMs!! >= cfg.disconnectConfirmSec * 1000L) {
-                    recoverPackage(pkg, p, h, nowMs, cfg, "Xác nhận mất kết nối; đang force-stop và rejoin.", forceStop = true)
+                    triggerRecovery("Xác nhận mất kết nối; đang force-stop và rejoin.", forceStop = true)
                     return
                 }
             }
@@ -949,7 +1136,7 @@ class WatchdogEngine(
                 if (nowMs - h.windowClosedSinceMs!! >= cfg.windowGraceSec * 1000L) {
                     val liveMin = !peers.isNullOrEmpty() && cfg.networkTimeoutSec > 0
                     val reason = if (liveMin) "Cửa sổ bị thu nhỏ với kết nối sống; đang mở lại." else "Cửa sổ game bị đóng quá Window grace; đang rejoin."
-                    recoverPackage(pkg, p, h, nowMs, cfg, reason, forceStop = !liveMin)
+                    triggerRecovery(reason, forceStop = !liveMin)
                     return
                 }
             } else {
@@ -969,12 +1156,126 @@ class WatchdogEngine(
         }
     }
 
+    fun runWatchdogNonBlocking(nowMs: Long = System.currentTimeMillis(), stateLock: Any, launchLock: Any) {
+        val queuedLaunch: DeferredLaunch?
+        val plan: Pair<RejoinConfig, List<String>>?
+        val epoch: Long
+        synchronized(stateLock) {
+            if (shouldYieldForCommand()) return
+            epoch = launchEpoch.get()
+            val cfg = effectiveConfig()
+            queuedLaunch = pickReadyQueuedLaunchLocked(nowMs, cfg, epoch)
+            if (queuedLaunch == null && watch && cfg.enabled) {
+                val due = profiles.values
+                    .sortedBy { it.slot }
+                    .filter { p ->
+                        if (!p.enabled || !p.autoReopen) return@filter false
+                        if (launchQueue.any { it.packageName == p.packageName }) return@filter false
+                        val h = health.getOrPut(p.packageName) { HealthTracker() }
+                        if (h.authPaused) {
+                            p.healthState = "auth_required"
+                            return@filter false
+                        }
+                        h.lastCheckMs == null || nowMs - h.lastCheckMs!! >= cfg.checkIntervalSec * 1000L
+                    }
+                    .map { it.packageName }
+                plan = if (due.isEmpty()) null else cfg to due
+            } else {
+                plan = null
+            }
+        }
+
+        if (queuedLaunch != null) {
+            executeDeferredLaunch(queuedLaunch, stateLock, launchLock)
+            return
+        }
+        if (plan == null || shouldYieldForCommand()) return
+
+        val (cfg, duePkgs) = plan
+        val runningMap = try {
+            android.runningStates(duePkgs)
+        } catch (_: Exception) {
+            duePkgs.associateWith { android.running(it) }
+        }
+        if (shouldYieldForCommand()) return
+
+        val runningPkgs = duePkgs.filter { runningMap[it] == true }
+        var snap: CycleSnapshot? = null
+        val udpPeersMap = mutableMapOf<String, Set<UdpPeer>?>()
+        if (runningPkgs.isNotEmpty()) {
+            snap = captureSnapshot(nowMs, cfg, runningPkgs)
+            if (shouldYieldForCommand()) return
+            if (cfg.teleportDetection || cfg.networkTimeoutSec > 0) {
+                for (pkg in runningPkgs) {
+                    if (shouldYieldForCommand()) return
+                    udpPeersMap[pkg] = try { android.udpPeers(pkg) } catch (_: Exception) { null }
+                }
+            }
+        }
+        if (shouldYieldForCommand()) return
+
+        var pendingRecovery: DeferredLaunch? = null
+        synchronized(stateLock) {
+            if (shouldYieldForCommand() || !watch || launchEpoch.get() != epoch) return
+            val liveCfg = effectiveConfig()
+            if (!liveCfg.enabled) return
+            for (pkg in duePkgs) {
+                val p = profiles[pkg] ?: continue
+                if (!p.enabled || !p.autoReopen) continue
+                if (launchQueue.any { it.packageName == pkg }) continue
+                val h = health.getOrPut(pkg) { HealthTracker() }
+                if (h.authPaused) {
+                    p.healthState = "auth_required"
+                    continue
+                }
+                h.lastCheckMs = nowMs
+                if (runningMap[pkg] == true && snap != null) {
+                    checkRunningHealth(
+                        pkg, p, h, nowMs, liveCfg, snap,
+                        prefetchedPeers = udpPeersMap[pkg],
+                        usePrefetchedPeers = true,
+                        onDeferRecovery = { deferred ->
+                            if (pendingRecovery == null) pendingRecovery = deferred
+                        },
+                        epoch = epoch,
+                    )
+                    continue
+                }
+                h.healthySinceMs = null
+                h.windowClosedSinceMs = null
+                h.disconnectSinceMs = null
+                h.socketLostSinceMs = null
+                h.highRamHits = 0
+                h.missing += 1
+                if (p.healthState != "paused_retries" || nowMs >= h.nextAllowedMs) {
+                    p.healthState = if (h.missing >= 2) "crashed" else "stopped"
+                }
+                if (!liveCfg.rejoinOnCrash || h.missing < 2) continue
+                if (pendingRecovery == null) {
+                    pendingRecovery = scheduleRecoveryStateLocked(
+                        pkg, p, h, nowMs, liveCfg,
+                        "Tiến trình bị đóng; đang tự mở lại.",
+                        forceStop = false,
+                        epoch = epoch,
+                        fromQueue = false,
+                    )
+                }
+            }
+        }
+
+        val toLaunch = pendingRecovery
+        if (toLaunch != null && !shouldYieldForCommand()) {
+            executeDeferredLaunch(toLaunch, stateLock, launchLock)
+        }
+    }
+
     fun watchdog(nowMs: Long = System.currentTimeMillis()) {
         drainLaunchQueue(nowMs)
         val cfg = effectiveConfig()
         if (!watch || !cfg.enabled) return
         var snap: CycleSnapshot? = null
         for (p in profiles.values.sortedBy { it.slot }) {
+            if (shouldYieldForCommand()) return
             val pkg = p.packageName
             if (!p.enabled || !p.autoReopen) continue
             if (launchQueue.any { it.packageName == pkg }) continue
@@ -1007,13 +1308,22 @@ class WatchdogEngine(
         }
     }
 
-    fun buildTelemetry(includeDiag: Boolean = true): JSONObject {
+    fun collectTelemetryInputs(pkgs: Collection<String>, includeDiag: Boolean = false): TelemetryInputs {
         val tasks = try { AndroidInspector.parseTasks(android.tasks()) } catch (_: Exception) { emptyMap() }
-        val rssMap = try { android.processRssMb(profiles.keys) } catch (_: Exception) { emptyMap() }
+        val rssMap = try { android.processRssMb(pkgs) } catch (_: Exception) { emptyMap() }
+        val runningMap = try { android.runningStates(pkgs) } catch (_: Exception) { pkgs.associateWith { android.running(it) } }
         val memInfo = try { android.memoryInfo() } catch (_: Exception) { null }
+        val devInfo = android.deviceInfo()
+        val freeform = android.freeformSupported()
+        val accEnabled = android.isAccessibilityEnabled()
+        val diag = if (includeDiag) android.collectDiagnostics(pkgs) else null
+        return TelemetryInputs(tasks, rssMap, runningMap, memInfo, devInfo, freeform, accEnabled, diag)
+    }
+
+    fun buildTelemetryFromInputs(inputs: TelemetryInputs, includeDiag: Boolean = false): JSONObject {
         val profJson = JSONObject()
         for ((pkg, p) in profiles) {
-            val isRunning = android.running(pkg)
+            val isRunning = inputs.runningMap[pkg] == true
             val acc = accounts[pkg]
             val item = p.toStateJson().apply {
                 put("running", isRunning)
@@ -1022,12 +1332,12 @@ class WatchdogEngine(
                 put("hasCookie", acc?.cookie?.isNotEmpty() == true)
                 put("appStatus", if (isRunning) "running" else "stopped")
                 if (!has("healthState")) put("healthState", if (isRunning) "running" else "stopped")
-                tasks[pkg]?.let { put("taskId", it) }
-                if (isRunning) rssMap[pkg]?.let { put("ramMb", it) }
+                inputs.tasks[pkg]?.let { put("taskId", it) }
+                if (isRunning) inputs.rssMap[pkg]?.let { put("ramMb", it) }
             }
             profJson.put(ConfigLimits.sha256Prefix16(pkg), item)
         }
-        val (model, androidVer) = android.deviceInfo()
+        val (model, androidVer) = inputs.deviceInfo
         val (buildCode, appVer) = appVersionInfo()
         return JSONObject().apply {
             put("lastSeen", System.currentTimeMillis())
@@ -1038,8 +1348,8 @@ class WatchdogEngine(
             put("watch", watch)
             put("streamConnected", streamConnected)
             put("excludedCount", excludedPackages.size)
-            put("accessibilityEnabled", android.isAccessibilityEnabled())
-            memInfo?.let { put("memory", it.toJson()) }
+            put("accessibilityEnabled", inputs.accessibilityEnabled)
+            inputs.memInfo?.let { put("memory", it.toJson()) }
             if (optFpsCap > 0 || optLowGraphics || optUpdatedAt != null) {
                 put("optimization", JSONObject().apply {
                     put("fpsCap", optFpsCap)
@@ -1050,12 +1360,17 @@ class WatchdogEngine(
             put("rejoinConfig", effectiveConfig().toJson())
             put("profiles", profJson)
             grid?.let { put("grid", it.toJson()) }
-            put("freeform", android.freeformSupported())
+            put("freeform", inputs.freeform)
             put("publicKey", crypto.publicJwk())
             if (includeDiag) {
-                android.collectDiagnostics(profiles.keys)?.let { put("windowDiag", it) }
+                inputs.diag?.let { put("windowDiag", it) }
             }
         }
+    }
+
+    fun buildTelemetry(includeDiag: Boolean = false): JSONObject {
+        val inputs = collectTelemetryInputs(profiles.keys.toList(), includeDiag)
+        return buildTelemetryFromInputs(inputs, includeDiag)
     }
 
     fun processCommand(firebase: FirebaseRestClient, command: JSONObject) {
@@ -1091,7 +1406,9 @@ class WatchdogEngine(
                     put("finishedAt", System.currentTimeMillis())
                 }
             } else {
-                firebase.device("results/$id", "PUT", result)
+                if (action !in FAST_ACK_ACTIONS) {
+                    firebase.device("results/$id", "PUT", result)
+                }
                 result = try {
                     val msg = execute(command)
                     JSONObject(result.toString()).apply {

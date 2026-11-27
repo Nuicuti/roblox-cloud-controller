@@ -660,6 +660,7 @@ interface AndroidDevice {
     fun appLabel(pkg: String): String? = null
     fun scanDiagnostics(): String = ""
     fun running(pkg: String): Boolean
+    fun runningStates(pkgs: Collection<String>): Map<String, Boolean> = pkgs.associateWith { running(it) }
     fun tasks(): String
     fun windows(): String
     fun surfaces(): String
@@ -703,6 +704,10 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
     private var lastDiagMs: Long = 0L
     @Volatile
     private var diagRefreshing: Boolean = false
+    @Volatile
+    private var cachedFreeformSupported: Boolean? = null
+    @Volatile
+    private var cachedDeviceInfo: Pair<String, String>? = null
 
     override fun beginGridPass() {
         resizeDiag = null
@@ -1000,19 +1005,26 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
         return res.exitCode == 0 && Regex("""[\d\s]+""").matches(res.output.trim())
     }
 
+    override fun runningStates(pkgs: Collection<String>): Map<String, Boolean> {
+        if (pkgs.isEmpty()) return emptyMap()
+        val allowed = pkgs.filter { ConfigLimits.isAllowedPackage(it) }
+        if (allowed.isEmpty()) return emptyMap()
+        val quoted = allowed.joinToString(" ") { RootShell.quote(it) }
+        val cmd = "for p in $quoted; do /system/bin/pidof \"\$p\" >/dev/null 2>&1 && echo \"\$p\"; done"
+        val res = RootShell.runRaw(cmd, check = false, timeoutSec = 5)
+        if (res.timedOut) return pkgs.associateWith { running(it) }
+        val alive = res.output.lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        return pkgs.associateWith { it in alive }
+    }
+
     override fun tasks(): String =
         RootShell.run(listOf("/system/bin/dumpsys", "activity", "activities"), check = false, timeoutSec = 10).output
 
     override fun windows(): String =
         RootShell.run(listOf("/system/bin/dumpsys", "window", "windows"), check = false, timeoutSec = 10).output
 
-    override fun surfaces(): String {
-        val listRes = RootShell.run(listOf("/system/bin/dumpsys", "SurfaceFlinger", "--list"), check = false, timeoutSec = 6)
-        if (listRes.exitCode == 0 && listRes.output.lines().count { it.isNotBlank() } >= 2) {
-            return listRes.output
-        }
-        return RootShell.run(listOf("/system/bin/dumpsys", "SurfaceFlinger"), check = false, timeoutSec = 8).output
-    }
+    override fun surfaces(): String =
+        RootShell.run(listOf("/system/bin/dumpsys", "SurfaceFlinger", "--list"), check = false, timeoutSec = 4).output
 
     override fun uiTreeXml(): String {
         val dumpPath = "/data/local/tmp/rejoin_ui_dump.xml"
@@ -1096,12 +1108,15 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
     }
 
     override fun freeformSupported(): Boolean {
+        cachedFreeformSupported?.let { return it }
         return try {
             val features = RootShell.run(listOf("/system/bin/pm", "list", "features"), check = false, timeoutSec = 8).output
             val setting = RootShell.run(listOf("/system/bin/settings", "get", "global", "enable_freeform_support"), check = false, timeoutSec = 5).output
             val help = RootShell.run(listOf("/system/bin/am", "help"), check = false, timeoutSec = 5).output
-            (features.contains("android.software.freeform_window_management") || setting.trim() == "1") &&
+            val supported = (features.contains("android.software.freeform_window_management") || setting.trim() == "1") &&
                 (help.contains("--windowingMode") || help.contains("resize <TASK_ID>") || Build.VERSION.SDK_INT >= 29)
+            cachedFreeformSupported = supported
+            supported
         } catch (_: Exception) {
             false
         }
@@ -1256,8 +1271,9 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
     }
 
     override fun open(pkg: String, freeform: Boolean, placeId: String, jobId: String) {
-        val args = mutableListOf("/system/bin/am", "start", "-W", "--user", "0")
-        args.addAll(listOf("--windowingMode", if (freeform) "5" else "1"))
+        val args = mutableListOf("/system/bin/am", "start")
+        if (!freeform) args.add("-W")
+        args.addAll(listOf("--user", "0", "--windowingMode", if (freeform) "5" else "1"))
         val uri = ConfigLimits.buildRobloxUri(placeId, jobId)
         if (uri.isNotEmpty()) {
             args.addAll(listOf("-a", "android.intent.action.VIEW", "-d", uri, "-p", pkg))
@@ -1477,6 +1493,7 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
     }
 
     override fun setFreeformFlags(enabled: Boolean, previousBackup: Map<String, String>?): Map<String, String> {
+        cachedFreeformSupported = null
         val names = listOf("enable_freeform_support", "force_resizable_activities")
         if (enabled) {
             val backup = previousBackup ?: names.associateWith {
@@ -1499,7 +1516,8 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
     }
 
     override fun deviceInfo(): Pair<String, String> {
+        cachedDeviceInfo?.let { return it }
         val model = RootShell.run(listOf("/system/bin/getprop", "ro.product.model"), check = false, timeoutSec = 5).output
-        return (model.ifEmpty { "Redfinger Device" }) to Build.VERSION.RELEASE
+        return ((model.ifEmpty { "Redfinger Device" }) to Build.VERSION.RELEASE).also { cachedDeviceInfo = it }
     }
 }
