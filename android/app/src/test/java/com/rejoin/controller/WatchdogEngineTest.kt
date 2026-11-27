@@ -336,4 +336,22 @@ class WatchdogEngineTest {
         val arrObj = clean.getJSONArray("arr").getJSONObject(0)
         assertTrue(arrObj.has("nested_file_xml"))
     }
+
+    @Test
+    fun `app cloner window xml upsert preserves clone metadata and sets local bounds`() {
+        val existing = """
+            <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+            <map>
+                <int name="app_cloner_current_window_bottom" value="583" />
+                <long name="com.applisto.appcloner.classes.cloneTimestamp" value="1794870921006" />
+                <int name="app_cloner_current_window_left" value="256" />
+                <int name="app_cloner_current_window_right" value="1024" />
+                <int name="app_cloner_current_window_top" value="173" />
+            </map>
+        """.trimIndent()
+        val updated = AndroidInspector.upsertAppClonerWindowXml(existing, 0, 0, 421, 320)
+        assertTrue(updated.contains("""<long name="com.applisto.appcloner.classes.cloneTimestamp" value="1794870921006" />"""))
+        val parsed = AndroidInspector.parseAppClonerWindowBounds(updated)
+        assertEquals(RectBounds(0, 0, 421, 320), parsed)
+    }
 }

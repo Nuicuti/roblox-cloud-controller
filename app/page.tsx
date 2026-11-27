@@ -1084,20 +1084,8 @@ export default function Dashboard() {
                       <h3>Sắp xếp cửa sổ</h3>
                     </div>
                     <p className="muted">
-                      Tự chia khít toàn bộ màn hình Freeform theo số clone bật và hướng ngang/dọc để dễ nhìn nhất.
+                      Ghi thẳng tọa độ vào cấu hình cửa sổ của APK Noka rồi mở khít toàn màn hình (khuyên dùng 2×3).
                     </p>
-                    <button
-                      className="primary full"
-                      style={{ marginTop: 12 }}
-                      disabled={blocked || !profiles.length}
-                      onClick={() => {
-                        setRows(smartGrid.rows);
-                        setCols(smartGrid.cols);
-                        issue({ action: "grid", ...smartGrid, smart: true });
-                      }}
-                    >
-                      <Grid2X2 size={16} /> Xếp lưới thông minh ({smartGrid.rows}×{smartGrid.cols})
-                    </button>
                     <div className="grid-preview" style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
                       {Array.from({ length: rows * cols }, (_, i) => (
                         <div key={i}>{profiles.find(p => p.slot === i + 1)?.label ?? <span>Ô {i + 1}</span>}</div>
@@ -1160,11 +1148,21 @@ export default function Dashboard() {
                       </p>
                     )}
                     <button
-                      className="secondary full"
+                      className="primary full"
                       disabled={blocked || !profiles.length}
-                      onClick={() => issue({ action: "grid", rows, cols, gap: 4, top: 24, bottom: 44 })}
+                      onClick={() =>
+                        issue({
+                          action: "grid",
+                          rows,
+                          cols,
+                          gap: 4,
+                          top: 18,
+                          bottom: 48,
+                          smart: rows === smartGrid.rows && cols === smartGrid.cols,
+                        })
+                      }
                     >
-                      <Grid2X2 size={16} /> Áp dụng lưới {rows}×{cols}
+                      <Grid2X2 size={16} /> Sắp xếp lưới {rows}×{cols}
                     </button>
                     <button
                       className="text-button full freeform-button"

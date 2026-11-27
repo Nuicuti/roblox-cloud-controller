@@ -466,6 +466,7 @@ class WatchdogEngine(
                     p.healthState = "stopped"
                     p.healthMessage = "Đã đóng và khôi phục cửa sổ mặc định."
                 }
+                android.resetAppClonerWindows(profiles.keys)
                 launchQueue.clear()
                 windowBackup = null
                 grid = null

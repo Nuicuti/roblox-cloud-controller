@@ -24,6 +24,8 @@ object NokaApkInspector {
     private val STD_PREFIX_RE = Regex(
         """^L(?:java|javax|kotlin|kotlinx|android|androidx|dalvik|sun|com/google|com/facebook|com/appsflyer|io/branch|org/json|org/apache|org/chromium)/""",
     )
+    @Volatile
+    private var dexScannedOnce = false
 
     fun collect(context: Context, managedPackages: Collection<String>): JSONObject {
         val out = JSONObject()
@@ -281,7 +283,8 @@ object NokaApkInspector {
         }
         apkObj.put("manifest", pkgLines.take(70).joinToString("\n").take(2600))
 
-        if (apkPath.isNotEmpty() && File(apkPath).canRead()) {
+        if (apkPath.isNotEmpty() && File(apkPath).canRead() && !dexScannedOnce) {
+            dexScannedOnce = true
             try {
                 ZipFile(apkPath).use { zip ->
                     val dexNames = mutableListOf<String>()

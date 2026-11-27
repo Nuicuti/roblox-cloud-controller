@@ -519,6 +519,54 @@ object AndroidInspector {
         }
         return peers
     }
+
+    private val APP_CLONER_WIN_KEYS = setOf(
+        "app_cloner_current_window_left",
+        "app_cloner_current_window_top",
+        "app_cloner_current_window_right",
+        "app_cloner_current_window_bottom",
+    )
+
+    fun parseAppClonerWindowBounds(xml: String?): RectBounds? {
+        if (xml.isNullOrEmpty()) return null
+        fun readInt(name: String): Int? =
+            Regex("""<int\s+name="${Regex.escape(name)}"\s+value="(-?\d+)"\s*/>""").find(xml)?.groupValues?.get(1)?.toIntOrNull()
+        val l = readInt("app_cloner_current_window_left") ?: return null
+        val t = readInt("app_cloner_current_window_top") ?: return null
+        val r = readInt("app_cloner_current_window_right") ?: return null
+        val b = readInt("app_cloner_current_window_bottom") ?: return null
+        return RectBounds(l, t, r, b)
+    }
+
+    fun upsertAppClonerWindowXml(existingXml: String?, left: Int, top: Int, right: Int, bottom: Int): String {
+        val keptLines = (existingXml ?: "")
+            .lines()
+            .map { it.trim() }
+            .filter { line ->
+                line.isNotEmpty() &&
+                    !line.startsWith("<?xml") &&
+                    !line.startsWith("<map") &&
+                    !line.startsWith("</map") &&
+                    APP_CLONER_WIN_KEYS.none { key -> line.contains("""name="$key"""") }
+            }
+        val winEntries = listOf(
+            """<int name="app_cloner_current_window_left" value="$left" />""",
+            """<int name="app_cloner_current_window_top" value="$top" />""",
+            """<int name="app_cloner_current_window_right" value="$right" />""",
+            """<int name="app_cloner_current_window_bottom" value="$bottom" />""",
+        )
+        return buildString {
+            appendLine("<?xml version='1.0' encoding='utf-8' standalone='yes' ?>")
+            appendLine("<map>")
+            for (line in keptLines) {
+                append("    ").appendLine(line)
+            }
+            for (entry in winEntries) {
+                append("    ").appendLine(entry)
+            }
+            append("</map>")
+        }
+    }
 }
 
 interface AndroidDevice {
@@ -541,6 +589,7 @@ interface AndroidDevice {
     fun sanitizeNegativeBounds(pkgs: Collection<String>): Int = 0
     fun collectDiagnostics(pkgs: Collection<String>): JSONObject? = null
     fun refreshDiagnostics(pkgs: Collection<String>): JSONObject? = null
+    fun resetAppClonerWindows(pkgs: Collection<String>) {}
     fun freeformSupported(): Boolean
     fun open(pkg: String, freeform: Boolean = false, placeId: String = "", jobId: String = "")
     fun close(pkg: String)
@@ -621,7 +670,7 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
             }
         }
         val top = dimenPx("status_bar_height", 24).coerceIn(18, 80)
-        val bottom = dimenPx("navigation_bar_height", 44).coerceIn(28, 120)
+        val bottom = maxOf(dimenPx("navigation_bar_height", 48), 48).coerceIn(44, 120)
         return top to bottom
     }
 
@@ -874,7 +923,7 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
 
     override fun open(pkg: String, freeform: Boolean, placeId: String, jobId: String) {
         val args = mutableListOf("/system/bin/am", "start", "-W", "--user", "0")
-        if (freeform) args.addAll(listOf("--windowingMode", "5"))
+        args.addAll(listOf("--windowingMode", if (freeform) "5" else "1"))
         val uri = ConfigLimits.buildRobloxUri(placeId, jobId)
         if (uri.isNotEmpty()) {
             args.addAll(listOf("-a", "android.intent.action.VIEW", "-d", uri, "-p", pkg))
@@ -889,6 +938,66 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
         RootShell.run(listOf("/system/bin/am", "force-stop", "--user", "0", pkg), check = false, timeoutSec = 10)
     }
 
+    private fun syncAppClonerWindowPrefs(
+        pkg: String,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int,
+        stopFirst: Boolean,
+    ): Boolean {
+        val dataDir = "/data/data/$pkg"
+        val prefsDir = "$dataDir/shared_prefs"
+        val prefPath = "$prefsDir/${pkg}_preferences.xml"
+        val markerCheck = RootShell.runRaw(
+            "if [ -f ${RootShell.quote(prefPath)} ] || [ -f ${RootShell.quote("$dataDir/files/cloneSettings.json")} ]; then echo YES; fi",
+            check = false,
+            timeoutSec = 3,
+        ).output
+        if (!markerCheck.contains("YES")) return false
+
+        val existing = RootShell.run(listOf("/system/bin/cat", prefPath), check = false, timeoutSec = 3).output
+        val cur = AndroidInspector.parseAppClonerWindowBounds(existing)
+        if (cur != null && cur.left == left && cur.top == top && cur.right == right && cur.bottom == bottom) {
+            return false
+        }
+
+        if (stopFirst) {
+            close(pkg)
+            Thread.sleep(220)
+        }
+        val updated = AndroidInspector.upsertAppClonerWindowXml(existing, left, top, right, bottom)
+        val tmpPath = "$prefsDir/.rejoin_win_tmp.xml"
+        val qData = RootShell.quote(dataDir)
+        val qPrefsDir = RootShell.quote(prefsDir)
+        val qTmp = RootShell.quote(tmpPath)
+        val qPref = RootShell.quote(prefPath)
+        val cmd = buildString {
+            appendLine("OWNER=\$(/system/bin/stat -c '%u:%g' $qData 2>/dev/null)")
+            appendLine("/system/bin/mkdir -p $qPrefsDir")
+            appendLine("if [ -n \"\$OWNER\" ]; then /system/bin/chown \"\$OWNER\" $qPrefsDir; fi")
+            appendLine("/system/bin/chmod 771 $qPrefsDir")
+            appendLine("cat <<'REJOIN_PREF_EOF' > $qTmp")
+            append(updated.trimEnd()).appendLine()
+            appendLine("REJOIN_PREF_EOF")
+            appendLine("if [ -n \"\$OWNER\" ]; then /system/bin/chown \"\$OWNER\" $qTmp; fi")
+            appendLine("/system/bin/chmod 660 $qTmp")
+            appendLine("/system/bin/mv $qTmp $qPref")
+            appendLine("/system/bin/restorecon $qPref 2>/dev/null || true")
+        }
+        RootShell.runRaw(cmd, check = false, timeoutSec = 5)
+        return true
+    }
+
+    override fun resetAppClonerWindows(pkgs: Collection<String>) {
+        for (pkg in pkgs) {
+            try {
+                syncAppClonerWindowPrefs(pkg, 256, 173, 1024, 583, stopFirst = false)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     override fun resize(pkg: String, bounds: RectBounds, launch: Boolean, placeId: String, jobId: String): Int {
         val safeBounds = RectBounds(
             left = bounds.left.coerceAtLeast(0),
@@ -901,7 +1010,14 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
         if (Build.VERSION.SDK_INT >= 30) {
             RootShell.run(listOf("/system/bin/am", "compat", "enable", "FORCE_RESIZE_APP", pkg), check = false, timeoutSec = 3)
         }
-        val existingPre = inspectPlacement(pkg)
+        val targetW = safeBounds.right - safeBounds.left
+        val targetH = safeBounds.bottom - safeBounds.top
+        val prefsUpdated = if (launch) {
+            syncAppClonerWindowPrefs(pkg, 0, 0, targetW, targetH, stopFirst = true)
+        } else {
+            false
+        }
+        val existingPre = if (!prefsUpdated) inspectPlacement(pkg) else null
         if (existingPre?.bounds != null && (existingPre.bounds.left < 0 || existingPre.bounds.top < 0)) {
             close(pkg)
             Thread.sleep(250)
