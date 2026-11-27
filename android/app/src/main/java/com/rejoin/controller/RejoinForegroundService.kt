@@ -126,7 +126,6 @@ class RejoinForegroundService : Service() {
 
         val engineLock = Any()
         val wakeLockObj = Object()
-        @Volatile
         var wakePending = true
         fun signalCommand() {
             synchronized(wakeLockObj) {
