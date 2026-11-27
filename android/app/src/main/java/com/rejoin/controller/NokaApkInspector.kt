@@ -41,7 +41,7 @@ object NokaApkInspector {
         out.put("live", collectLiveWindows())
         if (!samplePkg.isNullOrEmpty()) {
             out.put("apk", inspectApk(context, samplePkg))
-            out.put("appData", inspectAppData(samplePkg))
+            out.put("appData", inspectAppData(samplePkg, managedPackages))
         }
         val extraNokaPkg = thirdParty.firstOrNull {
             it != samplePkg && !it.startsWith("premium.noka") && !it.startsWith("free.noka") &&
@@ -49,7 +49,7 @@ object NokaApkInspector {
         }
         if (!extraNokaPkg.isNullOrEmpty()) {
             out.put("extraApk", inspectApk(context, extraNokaPkg))
-            out.put("extraAppData", inspectAppData(extraNokaPkg))
+            out.put("extraAppData", inspectAppData(extraNokaPkg, emptyList()))
         }
         return sanitizeFirebaseObject(out)
     }
@@ -210,7 +210,7 @@ object NokaApkInspector {
             }
             sb.append(trimmed).append('\n')
             count++
-            if (count >= 90 || sb.length >= 3500) break
+            if (count >= 140 || sb.length >= 5200) break
         }
         return if (sb.isNotEmpty()) sb.toString() else inputOut.lines().filter {
             it.contains("touchableRegion", ignoreCase = true) ||
@@ -294,21 +294,25 @@ object NokaApkInspector {
                         when {
                             name.endsWith(".dex") && !name.contains('/') -> dexNames.add("$name(${e.size / 1024}KB)")
                             name.startsWith("lib/") && name.endsWith(".so") -> libs.add("$name(${e.size / 1024}KB)")
-                            (name.startsWith("assets/") || name.startsWith("res/layout") || name.startsWith("res/xml")) &&
-                                DEX_HINT_RE.containsMatchIn(name) -> assets.add(name)
+                            name.startsWith("assets/") && !name.startsWith("assets/ExtraContent/") && !name.startsWith("assets/content/") -> assets.add("$name(${e.size / 1024}KB)")
+                            (name.startsWith("res/layout") || name.startsWith("res/xml")) && DEX_HINT_RE.containsMatchIn(name) -> assets.add(name)
                         }
                     }
                     apkObj.put("dexFiles", dexNames.joinToString(", "))
                     apkObj.put("libs", libs.take(35).joinToString(", "))
-                    apkObj.put("assets", assets.take(50).joinToString(", "))
+                    apkObj.put("assets", assets.take(80).joinToString(", "))
 
                     val classes = linkedSetOf<String>()
                     val strings = linkedSetOf<String>()
-                    val deadline = System.currentTimeMillis() + 3000L
+                    val deadline = System.currentTimeMillis() + 3500L
+                    val dexList = mutableListOf<java.util.zip.ZipEntry>()
                     val dexEntries = zip.entries()
                     while (dexEntries.hasMoreElements()) {
                         val entry = dexEntries.nextElement()
-                        if (!entry.name.endsWith(".dex") || entry.name.contains('/')) continue
+                        if (entry.name.endsWith(".dex") && !entry.name.contains('/')) dexList.add(entry)
+                    }
+                    // Scan smallest dexes (App Cloner / pack wrappers) first, then main dexes.
+                    for (entry in dexList.sortedBy { it.size }) {
                         if (System.currentTimeMillis() > deadline) break
                         if (classes.size >= 90 && strings.size >= 90) break
                         scanDexStrings(zip.getInputStream(entry), deadline, classes, strings)
@@ -353,24 +357,26 @@ object NokaApkInspector {
                         if (!truncated && tLen >= 5) {
                             val s = String(token, 0, tLen, Charsets.US_ASCII)
                             if (s.startsWith('L') && s.endsWith(';')) {
-                                if (classes.size < 90 && !STD_PREFIX_RE.containsMatchIn(s) && DEX_HINT_RE.containsMatchIn(s)) {
-                                    if (!s.startsWith("Lcom/roblox/") || s.contains("noka", ignoreCase = true) ||
-                                        s.contains("float", ignoreCase = true) || s.contains("freeform", ignoreCase = true) ||
-                                        s.contains("sort", ignoreCase = true) || s.contains("tab", ignoreCase = true)
-                                    ) {
-                                        classes.add(s)
-                                    }
-                                }
-                            } else if (strings.size < 90 && (
+                                val isInterestingCls = s.contains("applisto", ignoreCase = true) ||
                                     s.contains("noka", ignoreCase = true) ||
+                                    (!STD_PREFIX_RE.containsMatchIn(s) && !s.startsWith("Lcom/roblox/") && DEX_HINT_RE.containsMatchIn(s))
+                                if (classes.size < 90 && isInterestingCls) {
+                                    classes.add(s)
+                                }
+                            } else if (strings.size < 90 &&
+                                !s.contains("FloatingActionButton", ignoreCase = true) &&
+                                !s.contains("AppCompatTheme", ignoreCase = true) &&
+                                (
+                                    s.contains("app_cloner", ignoreCase = true) ||
+                                        s.contains("applisto", ignoreCase = true) ||
+                                        s.contains("FloatingApp", ignoreCase = true) ||
+                                        s.contains("floatingApp", ignoreCase = true) ||
+                                        s.contains("noka", ignoreCase = true) ||
                                         s.contains("discord.gg", ignoreCase = true) ||
-                                        s.contains("LayoutParams", ignoreCase = true) ||
-                                        s.contains("windowingMode", ignoreCase = true) ||
-                                        s.contains("WindowManager", ignoreCase = true) ||
-                                        s.contains("floating", ignoreCase = true) ||
-                                        s.contains("multiwindow", ignoreCase = true) ||
-                                        s.contains("tab_", ignoreCase = true) ||
-                                        s.contains("sort_", ignoreCase = true)
+                                        s.contains("window_left", ignoreCase = true) ||
+                                        s.contains("window_top", ignoreCase = true) ||
+                                        s.contains("DecorCaption", ignoreCase = true) ||
+                                        s.contains("windowingMode", ignoreCase = true)
                                     )
                             ) {
                                 strings.add(s)
@@ -384,14 +390,64 @@ object NokaApkInspector {
         }
     }
 
-    private fun inspectAppData(pkg: String): JSONObject {
+    private fun inspectAppData(pkg: String, allPkgs: Collection<String>): JSONObject {
         val dataObj = JSONObject()
         val dataDir = "/data/data/$pkg"
         val lsOut = RootShell.runRaw(
-            "/system/bin/ls -la ${RootShell.quote(dataDir)} ${RootShell.quote("$dataDir/shared_prefs")} ${RootShell.quote("$dataDir/files")} 2>/dev/null | /system/bin/head -n 80",
+            "/system/bin/ls -la ${RootShell.quote(dataDir)} ${RootShell.quote("$dataDir/files")} ${RootShell.quote("$dataDir/files/libpack")} ${RootShell.quote("$dataDir/files/appData")} 2>/dev/null | /system/bin/head -n 80",
             check = false, timeoutSec = 5,
         ).output
-        dataObj.put("ls", lsOut.take(2200))
+        dataObj.put("ls", lsOut.take(2400))
+
+        val cloneSettingsRaw = RootShell.run(listOf("/system/bin/cat", "$dataDir/files/cloneSettings.json"), check = false, timeoutSec = 4).output
+        if (cloneSettingsRaw.trim().startsWith("{")) {
+            try {
+                val cs = JSONObject(cloneSettingsRaw)
+                val allKeys = mutableListOf<String>()
+                val windowSubset = JSONObject()
+                val it = cs.keys()
+                while (it.hasNext()) {
+                    val k = it.next()
+                    allKeys.add(k)
+                    if (SENSITIVE_KEY_RE.containsMatchIn(k) || k.contains("proxy", ignoreCase = true) || k.contains("socks", ignoreCase = true)) {
+                        continue
+                    }
+                    if (k.contains("float", ignoreCase = true) ||
+                        k.contains("window", ignoreCase = true) ||
+                        k.contains("screen", ignoreCase = true) ||
+                        k.contains("size", ignoreCase = true) ||
+                        k.contains("scale", ignoreCase = true) ||
+                        k.contains("display", ignoreCase = true) ||
+                        k.contains("multi", ignoreCase = true) ||
+                        k.contains("dpi", ignoreCase = true) ||
+                        k.contains("aspect", ignoreCase = true) ||
+                        k.contains("rotation", ignoreCase = true) ||
+                        k.contains("orientation", ignoreCase = true) ||
+                        k.contains("cloner", ignoreCase = true) ||
+                        k.contains("menu", ignoreCase = true) ||
+                        k.contains("sort", ignoreCase = true) ||
+                        k.contains("tab", ignoreCase = true) ||
+                        k.contains("freeform", ignoreCase = true)
+                    ) {
+                        windowSubset.put(k, cs.get(k))
+                    }
+                }
+                dataObj.put("cloneSettingsKeys", allKeys.sorted().joinToString(", ").take(2500))
+                dataObj.put("cloneSettingsWindow", windowSubset)
+            } catch (e: Exception) {
+                dataObj.put("cloneSettingsErr", e.message ?: "parse error")
+            }
+        }
+
+        val allWinPrefs = JSONArray()
+        for (p in allPkgs.sorted()) {
+            val prefFile = "/data/data/$p/shared_prefs/${p}_preferences.xml"
+            val raw = RootShell.run(listOf("/system/bin/cat", prefFile), check = false, timeoutSec = 3).output
+            if (raw.contains("app_cloner_") || raw.contains("<map")) {
+                allWinPrefs.put(JSONObject().put("pkg", p).put("xml", raw.take(900)))
+            }
+        }
+        dataObj.put("allWindowPrefs", allWinPrefs)
 
         val prefsList = RootShell.runRaw(
             "/system/bin/ls ${RootShell.quote("$dataDir/shared_prefs")} 2>/dev/null",
@@ -408,7 +464,12 @@ object NokaApkInspector {
                 fileName.contains("admob", ignoreCase = true) ||
                 fileName.contains("chromium", ignoreCase = true) ||
                 fileName.contains("webview", ignoreCase = true) ||
-                fileName.contains("crash", ignoreCase = true)
+                fileName.contains("crash", ignoreCase = true) ||
+                fileName.contains("Backtrace", ignoreCase = true) ||
+                fileName.contains("APPS_FLYER", ignoreCase = true) ||
+                fileName.contains("ota_state", ignoreCase = true) ||
+                fileName.contains("cached_app_settings", ignoreCase = true) ||
+                fileName == "prefs.xml"
             ) {
                 continue
             }
