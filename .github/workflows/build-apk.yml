@@ -36,7 +36,12 @@ jobs:
 
       - name: Run Android Unit Tests & Build APK
         working-directory: android
-        run: gradle testDebugUnitTest assembleDebug --no-daemon
+        run: |
+          set -o pipefail
+          if ! gradle testDebugUnitTest assembleDebug --no-daemon --console=plain 2>&1 | tee gradle.log; then
+            tail -n 60 gradle.log | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
 
       - name: Upload Rejoin Control APK
         uses: actions/upload-artifact@v4

@@ -2,10 +2,11 @@ package com.rejoin.controller
 
 import android.content.Context
 import android.os.Build
-import org.xmlpull.v1.XmlPullParser
-import org.xmlpull.v1.XmlPullParserFactory
+import org.w3c.dom.Element
+import org.xml.sax.InputSource
 import java.io.File
 import java.io.StringReader
+import javax.xml.parsers.DocumentBuilderFactory
 import kotlin.math.abs
 
 data class RectBounds(val left: Int, val top: Int, val right: Int, val bottom: Int) {
@@ -194,35 +195,32 @@ object AndroidInspector {
         val systemTexts = mutableListOf<String>()
         val boundsRe = Regex("""\[(\d+),(\d+)\]\[(\d+),(\d+)\]""")
         try {
-            val factory = XmlPullParserFactory.newInstance()
-            val parser = factory.newPullParser()
-            parser.setInput(StringReader(uiXml))
-            var event = parser.eventType
-            while (event != XmlPullParser.END_DOCUMENT) {
-                if (event == XmlPullParser.START_TAG && parser.name == "node") {
-                    val nodePkg = parser.getAttributeValue(null, "package") ?: ""
-                    val textVal = (parser.getAttributeValue(null, "text") ?: "").trim()
-                    val descVal = (parser.getAttributeValue(null, "content-desc") ?: "").trim()
-                    val combined = listOf(textVal, descVal).filter { it.isNotEmpty() }.joinToString(" ")
-                    if (combined.isNotEmpty()) {
-                        if (nodePkg == pkg) {
-                            pkgTexts.add(combined)
-                        } else if (nodePkg == "android" && bounds != null) {
-                            val bStr = parser.getAttributeValue(null, "bounds") ?: ""
-                            val bm = boundsRe.matchEntire(bStr)
-                            if (bm != null) {
-                                val r = RectBounds(
-                                    bm.groupValues[1].toInt(),
-                                    bm.groupValues[2].toInt(),
-                                    bm.groupValues[3].toInt(),
-                                    bm.groupValues[4].toInt(),
-                                )
-                                if (r.centerInside(bounds)) systemTexts.add(combined)
-                            }
+            val builder = DocumentBuilderFactory.newInstance().newDocumentBuilder()
+            val doc = builder.parse(InputSource(StringReader(uiXml)))
+            val nodes = doc.getElementsByTagName("node")
+            for (i in 0 until nodes.length) {
+                val elem = nodes.item(i) as? Element ?: continue
+                val nodePkg = elem.getAttribute("package")
+                val textVal = elem.getAttribute("text").trim()
+                val descVal = elem.getAttribute("content-desc").trim()
+                val combined = listOf(textVal, descVal).filter { it.isNotEmpty() }.joinToString(" ")
+                if (combined.isNotEmpty()) {
+                    if (nodePkg == pkg) {
+                        pkgTexts.add(combined)
+                    } else if (nodePkg == "android" && bounds != null) {
+                        val bStr = elem.getAttribute("bounds")
+                        val bm = boundsRe.matchEntire(bStr)
+                        if (bm != null) {
+                            val r = RectBounds(
+                                bm.groupValues[1].toInt(),
+                                bm.groupValues[2].toInt(),
+                                bm.groupValues[3].toInt(),
+                                bm.groupValues[4].toInt(),
+                            )
+                            if (r.centerInside(bounds)) systemTexts.add(combined)
                         }
                     }
                 }
-                event = parser.next()
             }
         } catch (_: Exception) {
             return "unknown"
