@@ -1155,8 +1155,8 @@ export default function Dashboard() {
       {pair && (
         <Modal title="Ghép máy Redfinger mới" onClose={() => setPair(false)}>
           <p className="muted">
-            Lấy UID máy và Mã ghép từ agent chạy trong Termux (lệnh <code>python ~/noka-controller/agent.py setup</code>
-            ). Mã ghép có hiệu lực trong 10 phút.
+            Mở app <b>Rejoin Control (.apk)</b> trên Redfinger (hoặc chạy <code>python ~/noka-controller/agent.py setup</code>{" "}
+            nếu dùng Termux) để lấy UID máy và Mã ghép 10 phút.
           </p>
           <form
             onSubmit={async event => {

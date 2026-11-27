@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.RejoinControl" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">#B6F273</item>
+        <item name="colorOnPrimary">#14200D</item>
+        <item name="android:windowBackground">#0B0D12</item>
+        <item name="android:statusBarColor">#0B0D12</item>
+    </style>
+</resources>

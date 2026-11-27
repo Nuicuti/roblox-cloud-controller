@@ -1,0 +1,143 @@
+package com.rejoin.controller
+
+import org.json.JSONObject
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
+
+class FirebaseRestClient(private val storageDir: File) {
+    private val configFile = File(storageDir, "firebase_config.json")
+    private val authFile = File(storageDir, "firebase_auth.json")
+
+    private var token: String = ""
+    private var expiryMs: Long = 0
+    var uid: String = ""
+        private set
+
+    var apiKey: String = ""
+        private set
+    var databaseUrl: String = ""
+        private set
+
+    init {
+        loadConfig()
+    }
+
+    fun loadConfig() {
+        if (configFile.exists()) {
+            val obj = JSONObject(configFile.readText())
+            apiKey = obj.optString("apiKey", "")
+            databaseUrl = obj.optString("databaseURL", "").trimEnd('/')
+        }
+        if (authFile.exists()) {
+            val obj = JSONObject(authFile.readText())
+            uid = obj.optString("uid", "")
+        }
+    }
+
+    fun saveConfig(key: String, dbUrl: String) {
+        val cleanUrl = dbUrl.trim().trimEnd('/')
+        val parsed = URL(cleanUrl)
+        if (parsed.protocol != "https" ||
+            (!parsed.host.endsWith(".firebaseio.com") && !parsed.host.endsWith(".firebasedatabase.app"))
+        ) {
+            throw AgentException("URL Firebase Database không hợp lệ.")
+        }
+        storageDir.mkdirs()
+        if (configFile.exists() && databaseUrl.isNotEmpty() && databaseUrl != cleanUrl) {
+            authFile.delete()
+            uid = ""
+            token = ""
+            expiryMs = 0
+        }
+        apiKey = key.trim()
+        databaseUrl = cleanUrl
+        configFile.writeText(JSONObject().apply {
+            put("apiKey", apiKey)
+            put("databaseURL", databaseUrl)
+        }.toString())
+    }
+
+    fun isConfigured(): Boolean = apiKey.isNotEmpty() && databaseUrl.isNotEmpty()
+
+    @Synchronized
+    fun authenticate() {
+        if (!isConfigured()) throw AgentException("Chưa cấu hình Firebase API key / Database URL.")
+        if (token.isNotEmpty() && System.currentTimeMillis() < expiryMs) return
+        val refreshToken = if (authFile.exists()) JSONObject(authFile.readText()).optString("refreshToken", "") else ""
+        val encodedKey = URLEncoder.encode(apiKey, "UTF-8")
+        if (refreshToken.isNotEmpty()) {
+            val body = "grant_type=refresh_token&refresh_token=${URLEncoder.encode(refreshToken, "UTF-8")}"
+            val data = httpJson("https://securetoken.googleapis.com/v1/token?key=$encodedKey", "POST", body, form = true)
+                ?: throw AgentException("Không làm mới được token Firebase.")
+            token = data.getString("id_token")
+            uid = data.getString("user_id")
+            saveAuth(uid, data.getString("refresh_token"))
+            expiryMs = System.currentTimeMillis() + (data.getLong("expires_in") - 120L) * 1000L
+        } else {
+            val payload = JSONObject().put("returnSecureToken", true).toString()
+            val data = httpJson("https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=$encodedKey", "POST", payload)
+                ?: throw AgentException("Không tạo được danh tính thiết bị Firebase.")
+            token = data.getString("idToken")
+            uid = data.getString("localId")
+            saveAuth(uid, data.getString("refreshToken"))
+            expiryMs = System.currentTimeMillis() + (data.getLong("expiresIn") - 120L) * 1000L
+        }
+    }
+
+    private fun saveAuth(deviceUid: String, refreshToken: String) {
+        storageDir.mkdirs()
+        authFile.writeText(JSONObject().apply {
+            put("uid", deviceUid)
+            put("refreshToken", refreshToken)
+        }.toString())
+    }
+
+    fun request(path: String, method: String = "GET", payload: Any? = null): JSONObject? {
+        val raw = requestRaw(path, method, payload) ?: return null
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty() || trimmed == "null") return null
+        return if (trimmed.startsWith("{")) JSONObject(trimmed) else JSONObject().put("_value", trimmed)
+    }
+
+    fun requestRaw(path: String, method: String = "GET", payload: Any? = null): String? {
+        authenticate()
+        val encodedPath = ("nokaController/v1/$path").split("/").joinToString("/") { URLEncoder.encode(it, "UTF-8") }
+        val url = "$databaseUrl/$encodedPath.json?auth=${URLEncoder.encode(token, "UTF-8")}"
+        val body = when (payload) {
+            null -> null
+            is String -> payload
+            else -> payload.toString()
+        }
+        return httpRaw(url, method, body, form = false)
+    }
+
+    fun device(suffix: String, method: String = "GET", payload: Any? = null): JSONObject? {
+        authenticate()
+        return request("devices/$uid/$suffix", method, payload)
+    }
+
+    private fun httpJson(url: String, method: String, body: String?, form: Boolean = false): JSONObject? {
+        val raw = httpRaw(url, method, body, form) ?: return null
+        return if (raw.trim().startsWith("{")) JSONObject(raw) else null
+    }
+
+    private fun httpRaw(url: String, method: String, body: String?, form: Boolean): String? {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = method
+            connectTimeout = 15_000
+            readTimeout = 20_000
+            setRequestProperty("Content-Type", if (form) "application/x-www-form-urlencoded" else "application/json")
+            if (body != null) {
+                doOutput = true
+                outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            }
+        }
+        val code = conn.responseCode
+        if (code !in 200..299) {
+            throw AgentException("Dịch vụ trả HTTP $code; kiểm tra quyền và cấu hình.")
+        }
+        return conn.inputStream.bufferedReader().readText()
+    }
+}
