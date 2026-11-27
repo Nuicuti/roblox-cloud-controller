@@ -1177,8 +1177,9 @@ export default function Dashboard() {
                       className="text-button full"
                       disabled={blocked}
                       onClick={() => issue({ action: "restore_windowing" })}
+                      title="Đóng các clone đang kẹt, xóa lưới và khôi phục mở cửa sổ bình thường"
                     >
-                      Khôi phục cấu hình cửa sổ
+                      Khôi phục cửa sổ (Sửa kẹt)
                     </button>
                   </section>
 

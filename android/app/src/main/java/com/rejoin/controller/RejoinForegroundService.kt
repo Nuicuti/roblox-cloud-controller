@@ -98,13 +98,14 @@ class RejoinForegroundService : Service() {
             },
         )
         try {
+            val cleaned = engine.sanitizeBrokenTasks()
+            if (cleaned > 0) appendLog("Đã dọn $cleaned cửa sổ bị lệch tọa độ âm.")
             appendLog(engine.scan())
         } catch (e: Exception) {
             appendLog("[!] Quét clone ban đầu lỗi: ${e.message}")
         }
 
         var lastReportMs = 0L
-        var lastReflowMs = 0L
         var retryStep = 0
         appendLog("Agent APK đang chạy ngầm ổn định.")
         updateNotification("Đang giám sát ${engine.profiles.size} clone · Root OK")
@@ -137,15 +138,6 @@ class RejoinForegroundService : Service() {
                 engine.watchdog(System.currentTimeMillis())
 
                 val now = System.currentTimeMillis()
-                engine.grid?.let { g ->
-                    if (now - lastReflowMs > 30_000L) {
-                        try {
-                            engine.layout(g, launch = false)
-                        } catch (_: Exception) {
-                        }
-                        lastReflowMs = now
-                    }
-                }
                 if (now - lastReportMs > 12_000L) {
                     firebase.device("telemetry", "PUT", engine.buildTelemetry())
                     lastReportMs = now

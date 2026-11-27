@@ -295,4 +295,27 @@ class WatchdogEngineTest {
         assertTrue(msg.contains("build #13"))
         assertFalse(hookRan) // Hook only runs after Firebase result + inbox ACK in processCommand
     }
+
+    @Test
+    fun `restore windowing clears grid and closes running clones without throwing`() {
+        val dir = tempFolder.newFolder("restore-win")
+        val fa = FakeAndroid()
+        val engine = WatchdogEngine(dir, fa, CryptoStore(dir))
+        engine.scan()
+        engine.execute(
+            JSONObject()
+                .put("action", "grid")
+                .put("rows", 2)
+                .put("cols", 3)
+                .put("gap", 4)
+                .put("top", 24)
+                .put("bottom", 44),
+        )
+        engine.profiles["free.nokaA"]?.error = "lỗi vị trí lưới cũ"
+        val msg = engine.execute(JSONObject().put("action", "restore_windowing"))
+        assertTrue(msg.contains("khôi phục"))
+        assertEquals(null, engine.grid)
+        assertEquals(null, engine.profiles["free.nokaA"]?.error)
+        assertTrue(fa.closed.contains("free.nokaA"))
+    }
 }

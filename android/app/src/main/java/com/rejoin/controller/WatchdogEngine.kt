@@ -161,6 +161,22 @@ class WatchdogEngine(
         return placeId to jobId
     }
 
+    fun sanitizeBrokenTasks(): Int {
+        val fixed = android.sanitizeNegativeBounds(profiles.keys)
+        var cleared = false
+        for (p in profiles.values) {
+            if (p.error?.contains("vị trí lưới") == true || p.error?.contains("Chưa tìm thấy cửa sổ") == true) {
+                p.error = null
+                p.healthMessage = "Đã đặt lại trạng thái cửa sổ."
+                cleared = true
+            }
+        }
+        if (fixed > 0 || cleared) {
+            saveState()
+        }
+        return fixed
+    }
+
     fun scan(): String {
         val installed = android.packages()
         val knownSlots = mapOf("free.nokaA" to 3, "free.nokaB" to 4, "free.nokaC" to 1, "free.nokaD" to 2)
@@ -435,11 +451,20 @@ class WatchdogEngine(
                 "Đã bật cờ cửa sổ tự do. Một số máy cần khởi động lại Redfinger để áp dụng."
             }
             "restore_windowing" -> {
-                android.setFreeformFlags(false, windowBackup)
+                if (windowBackup != null) {
+                    android.setFreeformFlags(false, windowBackup)
+                }
+                for (p in profiles.values) {
+                    android.close(p.packageName)
+                    p.error = null
+                    p.healthState = "stopped"
+                    p.healthMessage = "Đã đóng và khôi phục cửa sổ mặc định."
+                }
+                launchQueue.clear()
                 windowBackup = null
                 grid = null
                 saveState()
-                "Đã khôi phục cờ cửa sổ và tắt tự xếp lưới."
+                "Đã đóng các clone đang mở, tắt lưới và khôi phục cửa sổ mặc định."
             }
             "login_all" -> {
                 val messages = mutableListOf<String>()
