@@ -582,7 +582,7 @@ export default function Dashboard() {
                 </button>
                 <button
                   className="secondary"
-                  disabled={blocked}
+                  disabled={pending || demo || !current}
                   onClick={() => issue({ action: "self_update" })}
                   title="Tự tải và cài đè APK mới nhất bằng quyền Root (không mất ghép máy)"
                 >

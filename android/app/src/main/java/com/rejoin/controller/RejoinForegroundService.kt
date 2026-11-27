@@ -158,7 +158,12 @@ class RejoinForegroundService : Service() {
 
                 val now = System.currentTimeMillis()
                 if (now - lastReportMs > 12_000L) {
-                    firebase.device("telemetry", "PUT", engine.buildTelemetry())
+                    try {
+                        firebase.device("telemetry", "PUT", engine.buildTelemetry(includeDiag = true))
+                    } catch (teleErr: Exception) {
+                        appendLog("[!] Telemetry chẩn đoán lỗi (${teleErr.message}); gửi bản chuẩn...")
+                        firebase.device("telemetry", "PUT", engine.buildTelemetry(includeDiag = false))
+                    }
                     lastReportMs = now
                     val activeCount = engine.profiles.values.count { it.enabled && it.healthState == "running" }
                     updateNotification("Online · Watchdog: ${if (engine.watch) "BẬT" else "TẮT"} · Hoạt động: $activeCount/${engine.profiles.size}")

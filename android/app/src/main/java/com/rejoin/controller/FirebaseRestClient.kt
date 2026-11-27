@@ -159,7 +159,12 @@ class FirebaseRestClient(private val storageDir: File) {
         }
         val code = conn.responseCode
         if (code !in 200..299) {
-            throw AgentException("Dịch vụ trả HTTP $code; kiểm tra quyền và cấu hình.")
+            val detail = try {
+                conn.errorStream?.bufferedReader()?.readText()?.replace('\n', ' ')?.trim()?.take(180)
+            } catch (_: Exception) {
+                null
+            }
+            throw AgentException("Dịch vụ trả HTTP $code${detail?.takeIf { it.isNotEmpty() }?.let { ": $it" } ?: "; kiểm tra quyền và cấu hình."}")
         }
         return conn.inputStream.bufferedReader().readText()
     }

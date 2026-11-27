@@ -753,7 +753,7 @@ class WatchdogEngine(
         }
     }
 
-    fun buildTelemetry(): JSONObject {
+    fun buildTelemetry(includeDiag: Boolean = true): JSONObject {
         val tasks = try { AndroidInspector.parseTasks(android.tasks()) } catch (_: Exception) { emptyMap() }
         val profJson = JSONObject()
         for ((pkg, p) in profiles) {
@@ -781,7 +781,9 @@ class WatchdogEngine(
             grid?.let { put("grid", it.toJson()) }
             put("freeform", android.freeformSupported())
             put("publicKey", crypto.publicJwk())
-            android.collectDiagnostics(profiles.keys)?.let { put("windowDiag", it) }
+            if (includeDiag) {
+                android.collectDiagnostics(profiles.keys)?.let { put("windowDiag", it) }
+            }
         }
     }
 

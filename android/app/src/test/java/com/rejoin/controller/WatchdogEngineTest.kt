@@ -318,4 +318,22 @@ class WatchdogEngineTest {
         assertEquals(null, engine.profiles["free.nokaA"]?.error)
         assertTrue(fa.closed.contains("free.nokaA"))
     }
+
+    @Test
+    fun `firebase key sanitizer removes invalid characters recursively`() {
+        val dirty = JSONObject()
+            .put("noka.prefs.xml", JSONObject().put("bad#key\$1[0]/x", "val"))
+            .put(
+                "arr",
+                JSONArray().put(
+                    JSONObject().put("nested.file.xml", "ok"),
+                ),
+            )
+        val clean = NokaApkInspector.sanitizeFirebaseObject(dirty)
+        assertTrue(clean.has("noka_prefs_xml"))
+        val inner = clean.getJSONObject("noka_prefs_xml")
+        assertTrue(inner.has("bad_key_1_0__x"))
+        val arrObj = clean.getJSONArray("arr").getJSONObject(0)
+        assertTrue(arrObj.has("nested_file_xml"))
+    }
 }

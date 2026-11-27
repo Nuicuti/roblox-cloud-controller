@@ -51,7 +51,30 @@ object NokaApkInspector {
             out.put("extraApk", inspectApk(context, extraNokaPkg))
             out.put("extraAppData", inspectAppData(extraNokaPkg))
         }
-        return out
+        return sanitizeFirebaseObject(out)
+    }
+
+    fun sanitizeFirebaseObject(obj: JSONObject): JSONObject {
+        val clean = JSONObject()
+        val it = obj.keys()
+        while (it.hasNext()) {
+            val rawKey = it.next()
+            val safeKey = rawKey.replace(Regex("""[.#$\[\]/]"""), "_").ifEmpty { "_k" }
+            clean.put(safeKey, sanitizeFirebaseValue(obj.get(rawKey)))
+        }
+        return clean
+    }
+
+    private fun sanitizeFirebaseValue(value: Any?): Any? {
+        return when (value) {
+            is JSONObject -> sanitizeFirebaseObject(value)
+            is JSONArray -> JSONArray().apply {
+                for (i in 0 until value.length()) {
+                    put(sanitizeFirebaseValue(value.get(i)))
+                }
+            }
+            else -> value
+        }
     }
 
     private fun listThirdPartyPackages(): List<String> {
@@ -375,7 +398,7 @@ object NokaApkInspector {
             check = false, timeoutSec = 4,
         ).output.lines().map { it.trim() }.filter { it.endsWith(".xml") }
 
-        val safePrefs = JSONObject()
+        val safePrefs = JSONArray()
         for (fileName in prefsList) {
             if (fileName.contains("cookie", ignoreCase = true) ||
                 fileName.contains("auth", ignoreCase = true) ||
@@ -403,7 +426,11 @@ object NokaApkInspector {
                 }
             }
             if (safeLines.isNotEmpty()) {
-                safePrefs.put(fileName, safeLines.take(30).joinToString("\n").take(1000))
+                safePrefs.put(
+                    JSONObject()
+                        .put("file", fileName)
+                        .put("xml", safeLines.take(30).joinToString("\n").take(1000)),
+                )
             }
         }
         dataObj.put("sharedPrefs", safePrefs)
