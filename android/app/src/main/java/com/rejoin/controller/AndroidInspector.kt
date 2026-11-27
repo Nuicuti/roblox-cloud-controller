@@ -5,6 +5,7 @@ import android.graphics.Point
 import android.hardware.display.DisplayManager
 import android.os.Build
 import android.view.Display
+import org.json.JSONObject
 import org.w3c.dom.Element
 import org.xml.sax.InputSource
 import java.io.File
@@ -538,6 +539,8 @@ interface AndroidDevice {
     fun beginGridPass() {}
     fun lastResizeNote(): String? = null
     fun sanitizeNegativeBounds(pkgs: Collection<String>): Int = 0
+    fun collectDiagnostics(pkgs: Collection<String>): JSONObject? = null
+    fun refreshDiagnostics(pkgs: Collection<String>): JSONObject? = null
     fun freeformSupported(): Boolean
     fun open(pkg: String, freeform: Boolean = false, placeId: String = "", jobId: String = "")
     fun close(pkg: String)
@@ -550,12 +553,44 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
     private val uidCache = mutableMapOf<String, Int>()
     private var flagsEnsured = false
     private var resizeDiag: String? = null
+    @Volatile
+    private var cachedDiag: JSONObject? = null
+    @Volatile
+    private var lastDiagMs: Long = 0L
+    @Volatile
+    private var diagRefreshing: Boolean = false
 
     override fun beginGridPass() {
         resizeDiag = null
     }
 
     override fun lastResizeNote(): String? = resizeDiag
+
+    override fun collectDiagnostics(pkgs: Collection<String>): JSONObject? {
+        val now = System.currentTimeMillis()
+        if ((cachedDiag == null || now - lastDiagMs > 60_000L) && !diagRefreshing) {
+            diagRefreshing = true
+            Thread({
+                try {
+                    refreshDiagnostics(pkgs)
+                } catch (_: Exception) {
+                } finally {
+                    diagRefreshing = false
+                }
+            }, "NokaDiagWorker").apply {
+                isDaemon = true
+                start()
+            }
+        }
+        return cachedDiag
+    }
+
+    override fun refreshDiagnostics(pkgs: Collection<String>): JSONObject? {
+        val diag = NokaApkInspector.collect(context, pkgs)
+        cachedDiag = diag
+        lastDiagMs = System.currentTimeMillis()
+        return diag
+    }
 
     override fun sanitizeNegativeBounds(pkgs: Collection<String>): Int {
         var fixed = 0

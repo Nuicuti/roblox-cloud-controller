@@ -177,6 +177,12 @@ class WatchdogEngine(
         return fixed
     }
 
+    fun refreshWindowDiag(): JSONObject? = try {
+        android.refreshDiagnostics(profiles.keys)
+    } catch (_: Exception) {
+        null
+    }
+
     fun scan(): String {
         val installed = android.packages()
         val knownSlots = mapOf("free.nokaA" to 3, "free.nokaB" to 4, "free.nokaC" to 1, "free.nokaD" to 2)
@@ -496,7 +502,13 @@ class WatchdogEngine(
                 if (failed) throw AgentException(messages.joinToString("; "))
                 messages.joinToString("; ")
             }
-            "status" -> "Đã cập nhật trạng thái."
+            "status" -> {
+                try {
+                    android.refreshDiagnostics(profiles.keys)
+                } catch (_: Exception) {
+                }
+                "Đã cập nhật trạng thái và chẩn đoán APK."
+            }
             "self_update" -> {
                 val updater = selfUpdater ?: throw AgentException("Thiết bị chưa hỗ trợ tự cập nhật từ xa.")
                 val (msg, hook) = updater.invoke()
@@ -769,6 +781,7 @@ class WatchdogEngine(
             grid?.let { put("grid", it.toJson()) }
             put("freeform", android.freeformSupported())
             put("publicKey", crypto.publicJwk())
+            android.collectDiagnostics(profiles.keys)?.let { put("windowDiag", it) }
         }
     }
 

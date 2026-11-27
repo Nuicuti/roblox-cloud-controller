@@ -101,6 +101,7 @@ class RejoinForegroundService : Service() {
             val cleaned = engine.sanitizeBrokenTasks()
             if (cleaned > 0) appendLog("Đã dọn $cleaned cửa sổ bị lệch tọa độ âm.")
             appendLog(engine.scan())
+            engine.refreshWindowDiag()
         } catch (e: Exception) {
             appendLog("[!] Quét clone ban đầu lỗi: ${e.message}")
         }
