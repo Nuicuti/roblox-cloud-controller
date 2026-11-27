@@ -19,11 +19,19 @@ if [ ! -d "/storage/emulated/0/Download" ]; then
     termux-setup-storage || true
 fi
 
+export DEBIAN_FRONTEND=noninteractive
+APT_OPTS=(-y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confnew")
+
 apt update -y || {
     echo "deb https://grimler.se/termux/termux-main stable main" > "$PREFIX/etc/apt/sources.list"
     apt update -y
 }
-pkg install -y python python-cryptography curl
+
+# Upgrade OpenSSL/Python/libcurl before configuring python-cryptography so pip SSL works.
+apt install "${APT_OPTS[@]}" openssl libcurl python curl || true
+apt full-upgrade "${APT_OPTS[@]}"
+dpkg --configure -a || true
+apt install "${APT_OPTS[@]}" python python-cryptography curl
 
 TARGET_DIR="$HOME/noka-controller"
 DATA_DIR="$HOME/.noka-controller"
