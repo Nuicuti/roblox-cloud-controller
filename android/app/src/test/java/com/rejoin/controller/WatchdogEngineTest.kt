@@ -302,6 +302,7 @@ class WatchdogEngineTest {
         val fa = FakeAndroid()
         val engine = WatchdogEngine(dir, fa, CryptoStore(dir))
         engine.scan()
+        engine.profiles["com.roblox.client"]?.enabled = false
         engine.execute(
             JSONObject()
                 .put("action", "grid")
