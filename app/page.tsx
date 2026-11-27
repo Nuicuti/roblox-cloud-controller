@@ -23,6 +23,7 @@ import {
   LoaderCircle,
   LogOut,
   Monitor,
+  Pencil,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -32,6 +33,7 @@ import {
   SlidersHorizontal,
   Smartphone,
   Square,
+  Trash2,
   X,
 } from "lucide-react";
 import { clientAuth } from "@/lib/firebase-client";
@@ -130,6 +132,8 @@ export default function Dashboard() {
   const [pair, setPair] = useState(false);
   const [credentials, setCredentials] = useState(false);
   const [editing, setEditing] = useState<Profile | null>(null);
+  const [renamingDevice, setRenamingDevice] = useState<Device | null>(null);
+  const [deletingDevice, setDeletingDevice] = useState<Device | null>(null);
   const [batchInput, setBatchInput] = useState("");
   const [rows, setRows] = useState(2);
   const [cols, setCols] = useState(2);
@@ -164,19 +168,22 @@ export default function Dashboard() {
     });
   }, []);
 
-  const api = useCallback(async (path: string, payload?: unknown) => {
-    if (!auth?.currentUser) throw new Error("Bạn cần đăng nhập trước.");
-    const token = await auth.currentUser.getIdToken();
-    const response = await fetch(path, {
-      method: payload === undefined ? "GET" : "POST",
-      cache: "no-store",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: payload === undefined ? undefined : JSON.stringify(payload),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error ?? "Không thực hiện được yêu cầu.");
-    return data;
-  }, []);
+  const api = useCallback(
+    async (path: string, payload?: unknown, method?: "GET" | "POST" | "PATCH" | "DELETE") => {
+      if (!auth?.currentUser) throw new Error("Bạn cần đăng nhập trước.");
+      const token = await auth.currentUser.getIdToken();
+      const response = await fetch(path, {
+        method: method ?? (payload === undefined ? "GET" : "POST"),
+        cache: "no-store",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: payload === undefined ? undefined : JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "Không thực hiện được yêu cầu.");
+      return data;
+    },
+    [],
+  );
 
   const refresh = useCallback(async () => {
     if (demo || !user) return;
@@ -365,22 +372,36 @@ export default function Dashboard() {
             </button>
           </div>
           {devices.map(device => (
-            <button
-              key={device.id}
-              className={`device-nav ${current?.id === device.id ? "selected" : ""}`}
-              onClick={() => {
-                setSelected(device.id);
-                setTab("accounts");
-                setRejoinDirty(false);
-              }}
-            >
-              <span className={`dot ${isOnline(device.telemetry?.lastSeen) ? "green" : "gray"}`} />
-              <span>
-                {device.meta.name}
-                <small>{Object.keys(device.telemetry?.profiles ?? {}).length} clone</small>
-              </span>
-              <ChevronRight size={14} />
-            </button>
+            <div key={device.id} className={`device-nav-row ${current?.id === device.id ? "selected" : ""}`}>
+              <button
+                className="device-nav"
+                onClick={() => {
+                  setSelected(device.id);
+                  setTab("accounts");
+                  setRejoinDirty(false);
+                }}
+              >
+                <span className={`dot ${isOnline(device.telemetry?.lastSeen) ? "green" : "gray"}`} />
+                <span>
+                  {device.meta.name}
+                  <small>{Object.keys(device.telemetry?.profiles ?? {}).length} clone</small>
+                </span>
+                <ChevronRight size={14} />
+              </button>
+              <button
+                type="button"
+                className="device-trash"
+                title={`Xóa ${device.meta.name}`}
+                aria-label={`Xóa ${device.meta.name}`}
+                disabled={pending || demo}
+                onClick={() => {
+                  setError("");
+                  setDeletingDevice(device);
+                }}
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
           ))}
           {!devices.length && <p className="side-empty">Chưa có máy nào. Bấm (+) để ghép máy.</p>}
         </div>
@@ -505,8 +526,8 @@ export default function Dashboard() {
               </div>
               <h2>Chưa có máy Redfinger nào được ghép</h2>
               <p>
-                Cài đặt agent trên Termux máy Redfinger, chạy lệnh setup để lấy UID và mã ghép 10 phút, sau đó nhập vào
-                đây.
+                Cài đặt <code>rejoin-control.apk</code> trên máy Redfinger, mở app và bấm <b>Tạo mã ghép máy</b> để lấy
+                UID + mã ghép 10 phút, sau đó nhập vào đây.
               </p>
               <button className="primary" onClick={() => setPair(true)}>
                 <Plus size={17} /> Ghép máy mới
@@ -533,6 +554,30 @@ export default function Dashboard() {
                 </div>
                 <button className="secondary" disabled={blocked} onClick={() => issue({ action: "scan" })}>
                   <ScanLine size={16} /> Quét Clone
+                </button>
+                <button
+                  className="icon-button"
+                  disabled={pending || demo}
+                  onClick={() => {
+                    setError("");
+                    setRenamingDevice(current);
+                  }}
+                  title="Đổi tên máy"
+                  aria-label="Đổi tên máy"
+                >
+                  <Pencil size={15} />
+                </button>
+                <button
+                  className="icon-button danger"
+                  disabled={pending || demo}
+                  onClick={() => {
+                    setError("");
+                    setDeletingDevice(current);
+                  }}
+                  title="Xóa máy khỏi bảng điều khiển"
+                  aria-label="Xóa máy khỏi bảng điều khiển"
+                >
+                  <Trash2 size={15} />
                 </button>
                 <button
                   className="icon-button"
@@ -1147,7 +1192,7 @@ export default function Dashboard() {
 
           <footer className="page-footer">
             <span>CLOUD REJOIN CONTROL <i /> roblox-cloud-farm</span>
-            <span>Redfinger · Termux · Vercel · Firebase RTDB</span>
+            <span>Redfinger · Android APK · Vercel · Firebase RTDB</span>
           </footer>
         </main>
       </div>
@@ -1189,7 +1234,7 @@ export default function Dashboard() {
               <input name="name" required maxLength={60} placeholder="Ví dụ: Redfinger 01" />
             </label>
             <label>
-              UID máy (từ terminal Termux)
+              UID máy (trong app Rejoin Control)
               <input name="id" required autoComplete="off" placeholder="UID ngẫu nhiên do Firebase cấp" />
             </label>
             <label>
@@ -1410,6 +1455,81 @@ export default function Dashboard() {
             </button>
             {error && <p className="error-text">{error}</p>}
           </form>
+        </Modal>
+      )}
+
+      {renamingDevice && (
+        <Modal title="Đổi tên máy Redfinger" onClose={() => setRenamingDevice(null)}>
+          <form
+            onSubmit={async event => {
+              event.preventDefault();
+              setPending(true);
+              setError("");
+              const fields = new FormData(event.currentTarget);
+              const name = String(fields.get("name") ?? "").trim();
+              try {
+                await api("/api/devices", { id: renamingDevice.id, name }, "PATCH");
+                setRenamingDevice(null);
+                setNotice(`Đã đổi tên máy thành “${name}”.`);
+                void refresh();
+              } catch (problem) {
+                setError(problem instanceof Error ? problem.message : "Chưa đổi được tên máy.");
+              } finally {
+                setPending(false);
+              }
+            }}
+          >
+            <label>
+              Tên hiển thị mới
+              <input name="name" defaultValue={renamingDevice.meta.name} required maxLength={60} />
+            </label>
+            <button className="primary full" disabled={pending}>
+              Lưu tên mới <Check size={16} />
+            </button>
+            {error && <p className="error-text">{error}</p>}
+          </form>
+        </Modal>
+      )}
+
+      {deletingDevice && (
+        <Modal title="Xóa máy khỏi bảng điều khiển" onClose={() => setDeletingDevice(null)}>
+          <p className="muted">
+            Bạn sắp xóa máy <b>{deletingDevice.meta.name}</b> (<code>{deletingDevice.id}</code>,{" "}
+            {Object.keys(deletingDevice.telemetry?.profiles ?? {}).length} clone) khỏi bảng điều khiển và Firebase RTDB.
+          </p>
+          <p className="muted" style={{ marginTop: 10 }}>
+            Thao tác này chỉ xóa dữ liệu điều khiển của phiên ghép này trên Web & Firebase (không gỡ cài đặt app trên
+            Redfinger). Nếu là máy cũ không dùng nữa, bạn có thể xóa an toàn.
+          </p>
+          {error && <p className="error-text">{error}</p>}
+          <div className="rejoin-actions" style={{ marginTop: 18 }}>
+            <button type="button" className="secondary" disabled={pending} onClick={() => setDeletingDevice(null)}>
+              Hủy
+            </button>
+            <button
+              type="button"
+              className="danger-button"
+              disabled={pending}
+              onClick={async () => {
+                setPending(true);
+                setError("");
+                const deleted = deletingDevice;
+                try {
+                  await api("/api/devices", { id: deleted.id }, "DELETE");
+                  if (selected === deleted.id) setSelected("");
+                  setDeletingDevice(null);
+                  setNotice(`Đã xóa máy “${deleted.meta.name}”.`);
+                  void refresh();
+                } catch (problem) {
+                  setError(problem instanceof Error ? problem.message : "Chưa xóa được máy.");
+                } finally {
+                  setPending(false);
+                }
+              }}
+            >
+              <Trash2 size={15} /> Xác nhận xóa máy
+            </button>
+          </div>
         </Modal>
       )}
     </div>

@@ -119,3 +119,23 @@ test('verified owner email bootstraps access but an unverified email cannot', as
   const outsider = env.authenticatedContext('outsider', { email: 'other@example.test', email_verified: true }).database();
   await assertFails(get(ref(outsider, base + '/ownerEmail')));
 });
+
+test('owner can rename and delete own device while outsiders and devices cannot', async () => {
+  await env.withSecurityRulesDisabled(async context => {
+    await set(ref(context.database(), base + '/devices/deviceA/meta'), {
+      ownerUid: 'ownerA', name: 'Old Name', pairedAt: Date.now(), pairingCode: 'c'.repeat(32),
+    });
+    await set(ref(context.database(), base + '/owners/ownerA/deviceA'), true);
+    await set(ref(context.database(), base + '/operators/ownerB'), true);
+  });
+
+  const owner = env.authenticatedContext('ownerA', { email: 'owner@example.test' }).database();
+  const other = env.authenticatedContext('ownerB', { email: 'other@example.test' }).database();
+  const dev = env.authenticatedContext('deviceA').database();
+
+  await assertFails(remove(ref(other, base + '/devices/deviceA')));
+  await assertFails(remove(ref(dev, base + '/devices/deviceA')));
+  await assertSucceeds(update(ref(owner, base + '/devices/deviceA/meta'), { name: 'New Name' }));
+  await assertSucceeds(remove(ref(owner, base + '/devices/deviceA')));
+  await assertSucceeds(remove(ref(owner, base + '/owners/ownerA/deviceA')));
+});

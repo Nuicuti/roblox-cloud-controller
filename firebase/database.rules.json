@@ -13,7 +13,7 @@
           "$owner": {
             ".read": "auth != null && auth.uid === $owner && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email))",
             "$device": {
-              ".write": "auth != null && auth.uid === $owner && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email)) && newData.val() === true && root.child('nokaController/v1/devices').child($device).child('meta/ownerUid').val() === auth.uid"
+              ".write": "auth != null && auth.uid === $owner && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email)) && ((!newData.exists() && data.exists()) || (newData.val() === true && root.child('nokaController/v1/devices').child($device).child('meta/ownerUid').val() === auth.uid))"
             }
           }
         },
@@ -35,6 +35,7 @@
         },
         "devices": {
           "$device": {
+            ".write": "auth != null && !newData.exists() && data.child('meta/ownerUid').val() === auth.uid && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email))",
             "meta": {
               ".read": "auth != null && (auth.uid === $device || (data.child('ownerUid').val() === auth.uid && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email))))",
               ".write": "auth != null && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email)) && newData.child('ownerUid').val() === auth.uid && ((data.exists() && data.child('ownerUid').val() === auth.uid) || (!data.exists() && root.child('nokaController/v1/pairingCodes').child(newData.child('pairingCode').val()).child('deviceUid').val() === $device && root.child('nokaController/v1/pairingCodes').child(newData.child('pairingCode').val()).child('expiresAt').val() > now))",

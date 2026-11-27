@@ -10,6 +10,7 @@ test('accepts rejoin config, rejoin commands, and global roblox / 6 clones', () 
   assert.equal(commandSchema.parse({ action: 'set_rejoin_config', config: { ...DEFAULT_REJOIN_CONFIG, placeId: '1730877806' } }).config.placeId, '1730877806');
   assert.equal(commandSchema.parse({ action: 'rejoin', package: 'com.roblox.client' }).package, 'com.roblox.client');
   assert.equal(commandSchema.parse({ action: 'open', package: 'free.nokaF' }).package, 'free.nokaF');
+  assert.equal(commandSchema.parse({ action: 'open', package: 'premium.nokaA' }).package, 'premium.nokaA');
   assert.equal(commandSchema.parse({ action: 'open', package: 'com.noka.free1' }).package, 'com.noka.free1');
   assert.equal(commandSchema.parse({ action: 'open', package: 'com.roblox.clien1' }).package, 'com.roblox.clien1');
   assert.equal(commandSchema.parse({ action: 'rejoin_all' }).action, 'rejoin_all');

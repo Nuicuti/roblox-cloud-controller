@@ -112,7 +112,7 @@ export type Result = {
 
 export type Device = {
   id: string;
-  meta: { name: string; ownerUid: string };
+  meta: { name: string; ownerUid: string; pairedAt?: number };
   telemetry?: {
     lastSeen: number;
     model: string;
