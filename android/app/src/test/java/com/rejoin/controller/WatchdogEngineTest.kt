@@ -78,6 +78,30 @@ class WatchdogEngineTest {
         assertTrue(AndroidInspector.boundsMatch(RectBounds(6, 32, 634, 350), RectBounds(8, 32, 632, 350)))
         assertFalse(AndroidInspector.boundsMatch(RectBounds(6, 32, 800, 350), RectBounds(6, 32, 634, 350)))
 
+        val stackDump = """
+            Stack id=12 bounds=[256,162][1024,558] displayId=0 userId=0
+             configuration={1.0 ?mcc?mnc [vi_VN] ldltr sw320dp w320dp h240dp 240dpi freeform mBounds=Rect(256, 162 - 1024, 558)}
+              taskId=40: premium.nokaF/com.roblox.client.startup.ActivitySplash bounds=[256,162][1024,558] userId=0 visible=true
+            Stack id=1 bounds=[0,0][1280,720] displayId=0 userId=0
+              taskId=35: premium.nokaA/com.roblox.client.startup.ActivitySplash bounds=[0,0][1280,720] userId=0 visible=true
+        """.trimIndent()
+        val parsedStacks = AndroidInspector.parseStackList(stackDump)
+        assertEquals(12, parsedStacks["premium.nokaF"]?.stackId)
+        assertEquals(40, parsedStacks["premium.nokaF"]?.taskId)
+        assertTrue(parsedStacks["premium.nokaF"]?.freeform == true)
+        assertEquals(RectBounds(256, 162, 1024, 558), parsedStacks["premium.nokaF"]?.bounds)
+        assertEquals(1, parsedStacks["premium.nokaA"]?.stackId)
+        assertFalse(parsedStacks["premium.nokaA"]?.freeform == true)
+
+        assertEquals(
+            1280 to 720,
+            AndroidInspector.parseDisplaySize(
+                "Physical size: 720x1280",
+                "mDisplayInfo=DisplayInfo{\"Built-in Screen\", real 720 x 1280}",
+                "Display #0: init=720x1280 240dpi cur=1280x720 app=1280x720",
+            ),
+        )
+
         val udp = """
             sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
              12: 0100007F:1234 0100007F:0035 01 0:0 0:0 0 10142 0 1

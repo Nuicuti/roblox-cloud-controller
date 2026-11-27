@@ -1106,6 +1106,12 @@ export default function Dashboard() {
                         3×2 (6 acc)
                       </button>
                     </div>
+                    {rows >= 3 && (
+                      <p className="muted" style={{ fontSize: 10, marginTop: -4, marginBottom: 12 }}>
+                        Màn hình ngang Redfinger nên ưu tiên <b>2×3 (6 acc)</b> để chiều cao mỗi ô không nhỏ hơn mức tối
+                        thiểu của Android.
+                      </p>
+                    )}
                     <button
                       className="primary full"
                       disabled={blocked || !profiles.length}

@@ -1,7 +1,10 @@
 package com.rejoin.controller
 
 import android.content.Context
+import android.graphics.Point
+import android.hardware.display.DisplayManager
 import android.os.Build
+import android.view.Display
 import org.w3c.dom.Element
 import org.xml.sax.InputSource
 import java.io.File
@@ -33,12 +36,77 @@ data class WindowChecks(
 
 data class UdpPeer(val addrHex: String, val port: Int)
 
+data class TaskPlacement(
+    val pkg: String,
+    val taskId: Int,
+    val stackId: Int?,
+    val bounds: RectBounds?,
+    val freeform: Boolean,
+)
+
 object AndroidInspector {
     private val HIST_RE = Regex("""\bHist\s+#\d+:\s+ActivityRecord\{""")
     private val TASK_PKG_RE = Regex("""\bu0\s+((?:[A-Za-z][A-Za-z0-9_]*\.)*[A-Za-z0-9_]*(?:noka|roblox|arceus)[A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*)/[^\s}]+\s+t(\d+)\b""", RegexOption.IGNORE_CASE)
     private val TASK_SPLIT_RE = Regex("""(?m)(?=^[ \t]*\*[ \t]*(?:Task|TaskRecord)\{)""")
+    private val STACK_SPLIT_RE = Regex("""(?m)(?=^[ \t]*Stack\s+#\d+:)""")
+    private val STACK_ID_RE = Regex("""\bStackId=(\d+)\b""")
+    private val STACK_HEADER_ID_RE = Regex("""Stack\s+#(\d+):""")
     private val BOUNDS_RECT_RE = Regex("""(?:mBounds|bounds)=Rect\((\d+),\s*(\d+)\s*-\s*(\d+),\s*(\d+)\)""")
     private val BOUNDS_BRACKET_RE = Regex("""(?:mBounds|bounds)=\[(\d+),\s*(\d+)\]\[(\d+),\s*(\d+)\]""")
+    private val STACK_LIST_HEADER_RE = Regex("""^\s*Stack\s+id=(\d+)\b""")
+    private val STACK_LIST_TASK_RE = Regex("""^\s*taskId=(\d+):\s*([A-Za-z0-9_.]+)/""")
+    private val BRACKET_PAIR_RE = Regex("""\[(\d+),\s*(\d+)\]\[(\d+),\s*(\d+)\]""")
+
+    private fun parseBoundsFromText(text: String): RectBounds? {
+        val rm = BOUNDS_RECT_RE.find(text)
+        if (rm != null) {
+            return RectBounds(
+                rm.groupValues[1].toInt(),
+                rm.groupValues[2].toInt(),
+                rm.groupValues[3].toInt(),
+                rm.groupValues[4].toInt(),
+            )
+        }
+        val bm = BOUNDS_BRACKET_RE.find(text)
+        if (bm != null) {
+            return RectBounds(
+                bm.groupValues[1].toInt(),
+                bm.groupValues[2].toInt(),
+                bm.groupValues[3].toInt(),
+                bm.groupValues[4].toInt(),
+            )
+        }
+        return null
+    }
+
+    fun parseDisplaySize(wmSizeOut: String?, dumpsysDisplayOut: String?, dumpsysWindowDisplaysOut: String?): Pair<Int, Int>? {
+        if (!dumpsysWindowDisplaysOut.isNullOrEmpty()) {
+            val cur = Regex("""\bcur=(\d+)x(\d+)\b""").find(dumpsysWindowDisplaysOut)
+            if (cur != null) {
+                val w = cur.groupValues[1].toInt()
+                val h = cur.groupValues[2].toInt()
+                if (w > 0 && h > 0) return w to h
+            }
+        }
+        if (!dumpsysDisplayOut.isNullOrEmpty()) {
+            val real = Regex("""mDisplayInfo=DisplayInfo\{[^\n]*?\breal\s+(\d+)\s*x\s*(\d+)""").find(dumpsysDisplayOut)
+            if (real != null) {
+                val w = real.groupValues[1].toInt()
+                val h = real.groupValues[2].toInt()
+                if (w > 0 && h > 0) return w to h
+            }
+        }
+        if (!wmSizeOut.isNullOrEmpty()) {
+            val matches = Regex("""(?:Physical|Override) size:\s*(\d+)x(\d+)""").findAll(wmSizeOut).toList()
+            val last = matches.lastOrNull()
+            if (last != null) {
+                val w = last.groupValues[1].toInt()
+                val h = last.groupValues[2].toInt()
+                if (w > 0 && h > 0) return w to h
+            }
+        }
+        return null
+    }
 
     fun parseTasks(text: String?): Map<String, Int> {
         if (text.isNullOrEmpty()) return emptyMap()
@@ -51,27 +119,95 @@ object AndroidInspector {
         return result
     }
 
+    fun parseStackList(stackListText: String?): Map<String, TaskPlacement> {
+        if (stackListText.isNullOrEmpty()) return emptyMap()
+        val result = linkedMapOf<String, TaskPlacement>()
+        var currentStackId: Int? = null
+        var currentStackBounds: RectBounds? = null
+        var currentStackFreeform = false
+
+        for (line in stackListText.lines()) {
+            val sh = STACK_LIST_HEADER_RE.find(line)
+            if (sh != null) {
+                currentStackId = sh.groupValues[1].toIntOrNull()
+                currentStackBounds = parseBoundsFromText(line) ?: BRACKET_PAIR_RE.find(line)?.let {
+                    RectBounds(it.groupValues[1].toInt(), it.groupValues[2].toInt(), it.groupValues[3].toInt(), it.groupValues[4].toInt())
+                }
+                currentStackFreeform = line.contains("freeform", ignoreCase = true) ||
+                    line.contains("windowingMode=5") ||
+                    line.contains("mode=5")
+                continue
+            }
+            if (currentStackId != null && (line.contains("configuration=") || line.contains("mBounds="))) {
+                if (line.contains("freeform", ignoreCase = true) || line.contains("windowingMode=5") || line.contains("mode=5")) {
+                    currentStackFreeform = true
+                }
+                if (currentStackBounds == null) {
+                    currentStackBounds = parseBoundsFromText(line)
+                }
+                continue
+            }
+            val tm = STACK_LIST_TASK_RE.find(line)
+            if (tm != null) {
+                val taskId = tm.groupValues[1].toIntOrNull() ?: continue
+                val pkg = tm.groupValues[2]
+                val tBounds = parseBoundsFromText(line) ?: BRACKET_PAIR_RE.find(line)?.let {
+                    RectBounds(it.groupValues[1].toInt(), it.groupValues[2].toInt(), it.groupValues[3].toInt(), it.groupValues[4].toInt())
+                } ?: currentStackBounds
+                val isFreeform = currentStackFreeform ||
+                    line.contains("freeform", ignoreCase = true) ||
+                    line.contains("windowingMode=5") ||
+                    line.contains("mode=5")
+                result.putIfAbsent(
+                    pkg,
+                    TaskPlacement(
+                        pkg = pkg,
+                        taskId = taskId,
+                        stackId = currentStackId,
+                        bounds = tBounds,
+                        freeform = isFreeform,
+                    ),
+                )
+            }
+        }
+        return result
+    }
+
     fun taskBounds(text: String?, taskId: Int): Pair<RectBounds?, Boolean> {
         if (text.isNullOrEmpty()) return null to false
         val idPattern = Regex("""#$taskId\b""")
-        val modePattern = Regex("""(?:windowingMode|mode)=5\b""")
-        for (chunk in TASK_SPLIT_RE.split(text)) {
-            val first = chunk.lineSequence().firstOrNull() ?: ""
-            if (!idPattern.containsMatchIn(first)) continue
-            val header = chunk.substringBefore("Hist #")
-            val m = BOUNDS_RECT_RE.find(header) ?: BOUNDS_BRACKET_RE.find(header)
-            val rect = m?.let {
-                RectBounds(
-                    it.groupValues[1].toInt(),
-                    it.groupValues[2].toInt(),
-                    it.groupValues[3].toInt(),
-                    it.groupValues[4].toInt(),
-                )
+        val modePattern = Regex("""(?:windowingMode|mode)=(?:5\b|freeform\b)""", RegexOption.IGNORE_CASE)
+
+        for (stackBlock in STACK_SPLIT_RE.split(text)) {
+            val stackHeader = stackBlock.substringBefore("* Task")
+            val stackFreeform = modePattern.containsMatchIn(stackHeader)
+            val stackRect = parseBoundsFromText(stackHeader)
+
+            for (chunk in TASK_SPLIT_RE.split(stackBlock)) {
+                val first = chunk.lineSequence().firstOrNull() ?: ""
+                if (!idPattern.containsMatchIn(first)) continue
+                val header = chunk.substringBefore("Hist #")
+                val rect = parseBoundsFromText(header) ?: stackRect
+                val freeform = stackFreeform || header.contains("freeform", ignoreCase = true) || modePattern.containsMatchIn(header)
+                return rect to freeform
             }
-            val freeform = header.contains("freeform") || modePattern.containsMatchIn(header)
-            return rect to freeform
         }
         return null to false
+    }
+
+    fun taskStackId(text: String?, taskId: Int): Int? {
+        if (text.isNullOrEmpty()) return null
+        val idPattern = Regex("""#$taskId\b""")
+        for (stackBlock in STACK_SPLIT_RE.split(text)) {
+            val stackNum = STACK_HEADER_ID_RE.find(stackBlock)?.groupValues?.get(1)?.toIntOrNull()
+            for (chunk in TASK_SPLIT_RE.split(stackBlock)) {
+                val first = chunk.lineSequence().firstOrNull() ?: ""
+                if (!idPattern.containsMatchIn(first)) continue
+                val header = chunk.substringBefore("Hist #")
+                return STACK_ID_RE.find(header)?.groupValues?.get(1)?.toIntOrNull() ?: stackNum
+            }
+        }
+        return null
     }
 
     fun boundsMatch(actual: RectBounds?, target: RectBounds?, tolerance: Int = 6): Boolean {
@@ -280,6 +416,7 @@ interface AndroidDevice {
 
 class RootAndroidDevice(private val context: Context) : AndroidDevice {
     private val uidCache = mutableMapOf<String, Int>()
+    private var flagsEnsured = false
 
     private fun collectInstalledPackages(): Set<String> {
         val found = linkedSetOf<String>()
@@ -423,14 +560,22 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
     }
 
     override fun displaySize(): Pair<Int, Int> {
-        val out = RootShell.run(listOf("/system/bin/wm", "size")).output
-        val matches = Regex("""(?:Physical|Override) size:\s*(\d+)x(\d+)""").findAll(out).toList()
-        val last = matches.lastOrNull() ?: throw AgentException("Không đọc được kích thước màn hình.")
-        val w = last.groupValues[1].toInt()
-        val h = last.groupValues[2].toInt()
-        val display = RootShell.run(listOf("/system/bin/dumpsys", "display"), check = false).output
-        val real = Regex("""mDisplayInfo=DisplayInfo\{[^\n]*?\breal\s+(\d+)\s*x\s*(\d+)""").find(display)
-        return if (real != null) real.groupValues[1].toInt() to real.groupValues[2].toInt() else w to h
+        try {
+            val dm = context.getSystemService(DisplayManager::class.java)
+            val disp = dm?.getDisplay(Display.DEFAULT_DISPLAY)
+            if (disp != null) {
+                val p = Point()
+                @Suppress("DEPRECATION")
+                disp.getRealSize(p)
+                if (p.x > 0 && p.y > 0) return p.x to p.y
+            }
+        } catch (_: Exception) {
+        }
+        val winDisplays = RootShell.run(listOf("/system/bin/dumpsys", "window", "displays"), check = false, timeoutSec = 6).output
+        val display = RootShell.run(listOf("/system/bin/dumpsys", "display"), check = false, timeoutSec = 6).output
+        val wm = RootShell.run(listOf("/system/bin/wm", "size"), check = false, timeoutSec = 5).output
+        return AndroidInspector.parseDisplaySize(wm, display, winDisplays)
+            ?: throw AgentException("Không đọc được kích thước màn hình.")
     }
 
     override fun freeformSupported(): Boolean {
@@ -439,10 +584,73 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
             val setting = RootShell.run(listOf("/system/bin/settings", "get", "global", "enable_freeform_support"), check = false, timeoutSec = 5).output
             val help = RootShell.run(listOf("/system/bin/am", "help"), check = false, timeoutSec = 5).output
             (features.contains("android.software.freeform_window_management") || setting.trim() == "1") &&
-                help.contains("--windowingMode") && help.contains("resize <TASK_ID>")
+                (help.contains("--windowingMode") || help.contains("resize <TASK_ID>") || Build.VERSION.SDK_INT >= 29)
         } catch (_: Exception) {
             false
         }
+    }
+
+    private fun stackListText(): String {
+        val amOut = RootShell.run(listOf("/system/bin/am", "stack", "list"), check = false, timeoutSec = 6).output
+        if (amOut.contains("taskId=") || amOut.contains("Stack id=")) return amOut
+        return RootShell.run(listOf("/system/bin/cmd", "activity", "stack", "list"), check = false, timeoutSec = 6).output
+    }
+
+    private fun ensureRuntimeFreeformFlags() {
+        if (flagsEnsured) return
+        val cmds = listOf(
+            "/system/bin/settings put global enable_freeform_support 1",
+            "/system/bin/settings put global force_resizable_activities 1",
+            "/system/bin/settings put global hidden_api_policy 1",
+            "/system/bin/settings put global hidden_api_policy_p_apps 1",
+            "/system/bin/settings put global hidden_api_policy_pre_p_apps 1",
+        )
+        for (c in cmds) {
+            RootShell.runRaw(c, check = false, timeoutSec = 3)
+        }
+        flagsEnsured = true
+    }
+
+    private fun runWindowHelper(vararg helperArgs: String): ShellResult {
+        val apkPath = context.packageCodePath
+        val quotedArgs = helperArgs.joinToString(" ") { RootShell.quote(it) }
+        val cmd = "CLASSPATH=${RootShell.quote(apkPath)} /system/bin/app_process /system/bin com.rejoin.controller.WindowHelper $quotedArgs"
+        return RootShell.runRaw(cmd, check = false, timeoutSec = 8)
+    }
+
+    private fun inspectPlacement(pkg: String): TaskPlacement? {
+        val tText = tasks()
+        val sText = stackListText()
+        val fromStacks = AndroidInspector.parseStackList(sText)[pkg]
+        val taskIdFromDump = AndroidInspector.parseTasks(tText)[pkg]
+        val taskId = taskIdFromDump ?: fromStacks?.taskId ?: return null
+        val (dumpRect, dumpFreeform) = AndroidInspector.taskBounds(tText, taskId)
+        val dumpStackId = AndroidInspector.taskStackId(tText, taskId)
+        val stackId = fromStacks?.stackId ?: dumpStackId
+        val rect = fromStacks?.bounds ?: dumpRect
+        val freeform = dumpFreeform || (fromStacks?.freeform == true)
+        return TaskPlacement(pkg = pkg, taskId = taskId, stackId = stackId, bounds = rect, freeform = freeform)
+    }
+
+    private fun waitForTaskId(pkg: String, timeoutMs: Long = 12_000L): TaskPlacement {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val placement = inspectPlacement(pkg)
+            if (placement != null) return placement
+            Thread.sleep(450)
+        }
+        throw AgentException("Chưa tìm thấy cửa sổ đang hoạt động của $pkg")
+    }
+
+    private fun switchTaskToFreeform(taskId: Int) {
+        runWindowHelper("mode", taskId.toString(), "5")
+        RootShell.run(listOf("/system/bin/am", "task", "set-windowing-mode", taskId.toString(), "5"), check = false, timeoutSec = 5)
+        RootShell.run(listOf("/system/bin/cmd", "activity", "task", "set-windowing-mode", taskId.toString(), "5"), check = false, timeoutSec = 5)
+    }
+
+    private fun placementSatisfied(p: TaskPlacement?, target: RectBounds, tolerance: Int = 24): Boolean {
+        if (p == null || !p.freeform || p.bounds == null) return false
+        return AndroidInspector.boundsMatch(p.bounds, target, tolerance = tolerance)
     }
 
     private fun resolveLauncher(pkg: String): String {
@@ -475,34 +683,108 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
     }
 
     override fun resize(pkg: String, bounds: RectBounds, launch: Boolean, placeId: String, jobId: String): Int {
+        ensureRuntimeFreeformFlags()
+        if (Build.VERSION.SDK_INT >= 30) {
+            RootShell.run(listOf("/system/bin/am", "compat", "enable", "FORCE_RESIZE_APP", pkg), check = false, timeoutSec = 3)
+        }
         if (launch) open(pkg, freeform = true, placeId = placeId, jobId = jobId)
-        val deadline = System.currentTimeMillis() + 12_000L
-        var task: Int? = null
-        var lastTasks = ""
-        while (System.currentTimeMillis() < deadline) {
-            lastTasks = tasks()
-            task = AndroidInspector.parseTasks(lastTasks)[pkg]
-            if (task != null) break
-            Thread.sleep(500)
+
+        var current = waitForTaskId(pkg)
+        if (!launch && placementSatisfied(current, bounds, tolerance = 16)) {
+            return current.taskId
         }
-        val taskId = task ?: throw AgentException("Chưa tìm thấy cửa sổ đang hoạt động của $pkg")
-        val (actual, isFreeform) = AndroidInspector.taskBounds(lastTasks, taskId)
-        if (!launch && isFreeform && AndroidInspector.boundsMatch(actual, bounds)) {
-            return taskId
+        val beforeRect = current.bounds
+
+        if (!current.freeform) {
+            switchTaskToFreeform(current.taskId)
+            Thread.sleep(250)
+            current = inspectPlacement(pkg) ?: current
+            if (!current.freeform && launch) {
+                // Existing fullscreen task refused to switch mode: relaunch cleanly into freeform stack.
+                close(pkg)
+                Thread.sleep(300)
+                open(pkg, freeform = true, placeId = placeId, jobId = jobId)
+                current = waitForTaskId(pkg)
+            }
         }
-        RootShell.run(
-            listOf("/system/bin/am", "task", "resize", taskId.toString(), bounds.left.toString(), bounds.top.toString(), bounds.right.toString(), bounds.bottom.toString()),
-            check = false,
+
+        val taskId = current.taskId
+        val stackId = current.stackId ?: 0
+        val trace = mutableListOf<String>()
+
+        val strategies: List<Pair<String, () -> ShellResult>> = buildList {
+            add("helper" to {
+                runWindowHelper(
+                    "resize", taskId.toString(),
+                    bounds.left.toString(), bounds.top.toString(), bounds.right.toString(), bounds.bottom.toString(),
+                    stackId.toString(),
+                )
+            })
+            add("am-task-space" to {
+                RootShell.run(
+                    listOf("/system/bin/am", "task", "resize", taskId.toString(), bounds.left.toString(), bounds.top.toString(), bounds.right.toString(), bounds.bottom.toString()),
+                    check = false, timeoutSec = 6,
+                )
+            })
+            add("am-task-comma" to {
+                RootShell.run(
+                    listOf("/system/bin/am", "task", "resize", taskId.toString(), "${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}"),
+                    check = false, timeoutSec = 6,
+                )
+            })
+            add("cmd-task-space" to {
+                RootShell.run(
+                    listOf("/system/bin/cmd", "activity", "task", "resize", taskId.toString(), bounds.left.toString(), bounds.top.toString(), bounds.right.toString(), bounds.bottom.toString()),
+                    check = false, timeoutSec = 6,
+                )
+            })
+            if (stackId > 0) {
+                add("helper-stack" to {
+                    runWindowHelper(
+                        "stack-resize", stackId.toString(),
+                        bounds.left.toString(), bounds.top.toString(), bounds.right.toString(), bounds.bottom.toString(),
+                    )
+                })
+                add("am-stack-space" to {
+                    RootShell.run(
+                        listOf("/system/bin/am", "stack", "resize", stackId.toString(), bounds.left.toString(), bounds.top.toString(), bounds.right.toString(), bounds.bottom.toString()),
+                        check = false, timeoutSec = 6,
+                    )
+                })
+                add("am-stack-comma" to {
+                    RootShell.run(
+                        listOf("/system/bin/am", "stack", "resize", stackId.toString(), "${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}"),
+                        check = false, timeoutSec = 6,
+                    )
+                })
+            }
+        }
+
+        var latest = current
+        for ((name, step) in strategies) {
+            val res = step()
+            trace.add("$name(${res.exitCode}):${res.output.replace('\n', ' ').take(80)}")
+            Thread.sleep(250)
+            latest = inspectPlacement(pkg) ?: latest
+            if (placementSatisfied(latest, bounds, tolerance = 24)) {
+                return latest.taskId
+            }
+        }
+
+        val afterRect = latest.bounds
+        // Accept when Android moved the freeform window to the cell's origin, even if ROM clamped minimum height/width.
+        if (latest.freeform && afterRect != null && afterRect != beforeRect &&
+            abs(afterRect.left - bounds.left) <= 36 && abs(afterRect.top - bounds.top) <= 36
+        ) {
+            return latest.taskId
+        }
+
+        throw AgentException(
+            "Không đổi được vị trí lưới cho $pkg (taskId=$taskId, stack=${latest.stackId}, freeform=${latest.freeform}, " +
+                "đích=[${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}], " +
+                "thực tế=${afterRect?.let { "[${it.left},${it.top},${it.right},${it.bottom}]" } ?: "null"}). " +
+                trace.joinToString(" | ").take(240),
         )
-        Thread.sleep(350)
-        val (afterRect, afterFreeform) = AndroidInspector.taskBounds(tasks(), taskId)
-        if (!afterFreeform || afterRect == null) {
-            RootShell.run(
-                listOf("/system/bin/am", "task", "resize", taskId.toString(), "${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}"),
-                check = false,
-            )
-        }
-        return taskId
     }
 
     override fun setFreeformFlags(enabled: Boolean, previousBackup: Map<String, String>?): Map<String, String> {

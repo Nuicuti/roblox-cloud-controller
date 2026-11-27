@@ -408,7 +408,8 @@ class WatchdogEngine(
                 layout(gs, launch = true)
                 grid = gs
                 saveState()
-                "Đã xếp lưới và đối chiếu vị trí Android báo lại."
+                val (w, h) = android.displaySize()
+                "Đã xếp lưới ${gs.rows}×${gs.cols} (${w}×${h}) và xác nhận vị trí thực tế từ Android."
             }
             "enable_freeform" -> {
                 windowBackup = android.setFreeformFlags(true, windowBackup)
