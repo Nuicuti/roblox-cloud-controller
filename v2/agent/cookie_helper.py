@@ -10,7 +10,7 @@ import sys
 import time
 
 def write_cookie(package, cookie, data_root=Path('/data/data')):
-    if not re.fullmatch(r'free\.noka[A-Za-z0-9_.]*', package) or not isinstance(cookie, str):
+    if not re.fullmatch(r'(?:free\.noka[A-Za-z0-9_.]*|com\.roblox\.client(?:\.[A-Za-z0-9_]+)*)', package) or not isinstance(cookie, str):
         raise ValueError('Package hoặc cookie không hợp lệ.')
     app = data_root/package
     choices = (app/'app_webview/Default/Cookies', app/'app_webview/Cookies')

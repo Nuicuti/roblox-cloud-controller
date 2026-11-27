@@ -90,7 +90,7 @@
               ".read": "auth != null && (auth.uid === $device || (root.child('nokaController/v1/devices').child($device).child('meta/ownerUid').val() === auth.uid && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email))))",
               "$command": {
                 ".write": "auth != null && ((auth.uid === $device && !newData.exists()) || (root.child('nokaController/v1/devices').child($device).child('meta/ownerUid').val() === auth.uid && (root.child('nokaController/v1/operators').child(auth.uid).val() === true || (auth.token.email_verified === true && root.child('nokaController/v1/ownerEmail').val() === auth.token.email)) && (!data.exists() || !newData.exists())))",
-                ".validate": "newData.hasChildren(['id','action','createdAt','expiresAt']) && newData.child('id').val() === $command && newData.child('expiresAt').val() > now && newData.child('expiresAt').val() <= now + 180000 && newData.child('action').val().matches(/^(scan|open_all|status|set_watch|profile|open|close|grid|enable_freeform|restore_windowing|set_accounts|login_all)$/)",
+                ".validate": "newData.hasChildren(['id','action','createdAt','expiresAt']) && newData.child('id').val() === $command && newData.child('expiresAt').val() > now && newData.child('expiresAt').val() <= now + 180000 && newData.child('action').val().matches(/^(scan|open_all|rejoin_all|status|set_watch|set_rejoin_config|profile|open|close|rejoin|grid|enable_freeform|restore_windowing|set_accounts|login_all)$/)",
                 "id": {
                   ".validate": "newData.isString()"
                 },
@@ -104,7 +104,7 @@
                   ".validate": "newData.isNumber()"
                 },
                 "package": {
-                  ".validate": "newData.isString() && newData.val().matches(/^free[.]noka[A-Za-z0-9_.]*$/)"
+                  ".validate": "newData.isString() && newData.val().matches(/^(free[.]noka[A-Za-z0-9_.]*|com[.]roblox[.]client([.][A-Za-z0-9_]+)*)$/)"
                 },
                 "enabled": {
                   ".validate": "newData.isBoolean()"
@@ -125,7 +125,70 @@
                   ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 250"
                 },
                 "profile": {
-                  ".validate": "newData.hasChildren(['package','label','username','slot','enabled']) && newData.child('package').isString() && newData.child('package').val().matches(/^free[.]noka[A-Za-z0-9_.]*$/) && newData.child('slot').isNumber() && newData.child('slot').val() >= 1 && newData.child('slot').val() <= 36 && newData.child('enabled').isBoolean()"
+                  ".validate": "newData.hasChildren(['package','label','username','slot','enabled']) && newData.child('package').isString() && newData.child('package').val().matches(/^(free[.]noka[A-Za-z0-9_.]*|com[.]roblox[.]client([.][A-Za-z0-9_]+)*)$/) && newData.child('slot').isNumber() && newData.child('slot').val() >= 1 && newData.child('slot').val() <= 36 && newData.child('enabled').isBoolean()",
+                  "placeId": {
+                    ".validate": "newData.isString() && newData.val().matches(/^[0-9]{0,20}$/)"
+                  },
+                  "jobId": {
+                    ".validate": "newData.isString() && newData.val().matches(/^[A-Za-z0-9-]{0,64}$/)"
+                  }
+                },
+                "config": {
+                  ".validate": "newData.hasChildren(['enabled','placeId','jobId','checkIntervalSec','delayAfterLaunchSec','delayBetweenClonesSec','bootGraceSec','windowGraceSec','disconnectConfirmSec','networkTimeoutSec','maxRejoinIntervalSec','retryAttempts','backoffSec','teleportDetection','teleportGraceSec','rejoinOnCrash','detectDisconnectUi'])",
+                  "enabled": {
+                    ".validate": "newData.isBoolean()"
+                  },
+                  "placeId": {
+                    ".validate": "newData.isString() && newData.val().matches(/^[0-9]{0,20}$/)"
+                  },
+                  "jobId": {
+                    ".validate": "newData.isString() && newData.val().matches(/^[A-Za-z0-9-]{0,64}$/)"
+                  },
+                  "checkIntervalSec": {
+                    ".validate": "newData.isNumber() && newData.val() >= 3 && newData.val() <= 60"
+                  },
+                  "delayAfterLaunchSec": {
+                    ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 120"
+                  },
+                  "delayBetweenClonesSec": {
+                    ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 60"
+                  },
+                  "bootGraceSec": {
+                    ".validate": "newData.isNumber() && newData.val() >= 10 && newData.val() <= 300"
+                  },
+                  "windowGraceSec": {
+                    ".validate": "newData.isNumber() && newData.val() >= 10 && newData.val() <= 300"
+                  },
+                  "disconnectConfirmSec": {
+                    ".validate": "newData.isNumber() && newData.val() >= 2 && newData.val() <= 60"
+                  },
+                  "networkTimeoutSec": {
+                    ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 300"
+                  },
+                  "maxRejoinIntervalSec": {
+                    ".validate": "newData.isNumber() && newData.val() >= 30 && newData.val() <= 900"
+                  },
+                  "retryAttempts": {
+                    ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 50"
+                  },
+                  "backoffSec": {
+                    ".validate": "newData.isNumber() && newData.val() >= 5 && newData.val() <= 120"
+                  },
+                  "teleportDetection": {
+                    ".validate": "newData.isBoolean()"
+                  },
+                  "teleportGraceSec": {
+                    ".validate": "newData.isNumber() && newData.val() >= 10 && newData.val() <= 300"
+                  },
+                  "rejoinOnCrash": {
+                    ".validate": "newData.isBoolean()"
+                  },
+                  "detectDisconnectUi": {
+                    ".validate": "newData.isBoolean()"
+                  },
+                  "$other": {
+                    ".validate": false
+                  }
                 },
                 "sealed": {
                   ".validate": "newData.hasChildren(['key','iv','data'])",

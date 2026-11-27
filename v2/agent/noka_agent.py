@@ -19,12 +19,48 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 
 PREFIX = '/data/data/com.termux/files/usr'
 ROOT = 'nokaController/v1'
 PRIVATE = Path('/data/data/com.termux/files/home/.noka-controller')
-PACKAGE = re.compile(r'free\.noka[A-Za-z0-9_.]*\Z')
+PACKAGE_PATTERN = r'(?:free\.noka[A-Za-z0-9_.]*|com\.roblox\.client(?:\.[A-Za-z0-9_]+)*)'
+PACKAGE = re.compile(PACKAGE_PATTERN + r'\Z')
 LOG = logging.getLogger('noka')
+
+DEFAULT_REJOIN_CONFIG = {
+    'enabled': False,
+    'placeId': '',
+    'jobId': '',
+    'checkIntervalSec': 3,
+    'delayAfterLaunchSec': 10,
+    'delayBetweenClonesSec': 0,
+    'bootGraceSec': 150,
+    'windowGraceSec': 90,
+    'disconnectConfirmSec': 10,
+    'networkTimeoutSec': 0,
+    'maxRejoinIntervalSec': 300,
+    'retryAttempts': 0,
+    'backoffSec': 30,
+    'teleportDetection': True,
+    'teleportGraceSec': 120,
+    'rejoinOnCrash': True,
+    'detectDisconnectUi': True,
+}
+
+REJOIN_CONFIG_BOUNDS = {
+    'checkIntervalSec': (3, 60),
+    'delayAfterLaunchSec': (0, 120),
+    'delayBetweenClonesSec': (0, 60),
+    'bootGraceSec': (10, 300),
+    'windowGraceSec': (10, 300),
+    'disconnectConfirmSec': (2, 60),
+    'networkTimeoutSec': (0, 300),
+    'maxRejoinIntervalSec': (30, 900),
+    'retryAttempts': (0, 50),
+    'backoffSec': (5, 120),
+    'teleportGraceSec': (10, 300),
+}
 
 class AgentError(Exception):
     pass
@@ -117,16 +153,186 @@ def root_command(args, *, stdin=None, check=True):
         raise AgentError(output[:500] or 'Lệnh Android không thành công.')
     return result.returncode, output
 
+def normalize_rejoin_config(raw=None, watch=False):
+    cfg = dict(DEFAULT_REJOIN_CONFIG)
+    if isinstance(raw, dict):
+        for key in ('enabled', 'teleportDetection', 'rejoinOnCrash', 'detectDisconnectUi'):
+            if isinstance(raw.get(key), bool):
+                cfg[key] = raw[key]
+        if isinstance(raw.get('placeId'), str) and re.fullmatch(r'\d{0,20}', raw['placeId'].strip()):
+            cfg['placeId'] = raw['placeId'].strip()
+        if isinstance(raw.get('jobId'), str) and re.fullmatch(r'[A-Za-z0-9-]{0,64}', raw['jobId'].strip()):
+            cfg['jobId'] = raw['jobId'].strip()
+        for key, (low, high) in REJOIN_CONFIG_BOUNDS.items():
+            val = raw.get(key)
+            if type(val) is int and low <= val <= high:
+                cfg[key] = val
+    if not isinstance(raw, dict) or 'enabled' not in raw:
+        cfg['enabled'] = bool(watch)
+    return cfg
+
+def build_roblox_uri(place_id='', job_id=''):
+    place_id = (place_id or '').strip()
+    job_id = (job_id or '').strip()
+    if not place_id or not re.fullmatch(r'\d{1,20}', place_id):
+        return ''
+    if job_id and re.fullmatch(r'[A-Za-z0-9-]{1,64}', job_id):
+        return f'roblox://placeId={place_id}&gameInstanceId={job_id}'
+    return f'roblox://experiences/start?placeId={place_id}'
+
 def parse_tasks(text):
     """Use live Hist records, not stale recents or substring package matches."""
     result = {}
     for line in text.splitlines():
         if not re.search(r'\bHist\s+#\d+:\s+ActivityRecord\{', line):
             continue
-        match = re.search(r'\bu0\s+(free\.noka[A-Za-z0-9_.]*)/[^\s}]+\s+t(\d+)\b', line)
+        match = re.search(rf'\bu0\s+({PACKAGE_PATTERN})/[^\s}}]+\s+t(\d+)\b', line)
         if match:
             result.setdefault(match[1], int(match[2]))
     return result
+
+def check_task_list(tasks_text, package):
+    if not tasks_text or 'ACTIVITY MANAGER' not in tasks_text:
+        return None
+    return package in parse_tasks(tasks_text)
+
+def check_window_manager(windows_text, package):
+    if not windows_text or ('WINDOW MANAGER' not in windows_text and 'Window{' not in windows_text):
+        return None
+    blocks = re.split(r'(?m)(?=^[ \t]*Window\s+#\d+\s+Window\{)', windows_text)
+    pkg_re = re.compile(rf'\bu0\s+{re.escape(package)}(?:/|\}}|\s)')
+    for block in blocks:
+        if not pkg_re.search(block):
+            continue
+        if 'mHasSurface=false' in block and 'mViewVisibility=0x8' in block:
+            continue
+        return True
+    return False
+
+def check_surfaces(surface_text, package):
+    lines = [line.strip() for line in (surface_text or '').splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+    pkg_re = re.compile(rf'(?:^|[\s\[/]){re.escape(package)}(?:[/\]#:\s]|$)')
+    return any(pkg_re.search(line) for line in lines)
+
+def check_screen_tree(ui_xml, package):
+    if not ui_xml or '<hierarchy' not in ui_xml:
+        return None
+    return f'package="{package}"' in ui_xml
+
+def evaluate_window_closed(checks):
+    """Four independent checks must agree; any unreadable check prevents false crash."""
+    if any(item is True for item in checks):
+        return False, True
+    if any(item is None for item in checks):
+        return False, False
+    return True, True
+
+def _parse_bounds(text):
+    match = re.fullmatch(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', (text or '').strip())
+    return tuple(map(int, match.groups())) if match else None
+
+def _bounds_overlap(inner, outer):
+    if not inner or not outer:
+        return False
+    cx, cy = (inner[0] + inner[2]) // 2, (inner[1] + inner[3]) // 2
+    return outer[0] <= cx <= outer[2] and outer[1] <= cy <= outer[3]
+
+def inspect_ui_state(ui_xml, package, bounds=None):
+    """Classify visible UI state for one package without ever attempting CAPTCHA bypass."""
+    if not ui_xml or '<hierarchy' not in ui_xml:
+        return 'unknown'
+    try:
+        root = ET.fromstring(ui_xml)
+    except ET.ParseError:
+        return 'unknown'
+
+    pkg_texts = []
+    system_texts = []
+    for node in root.iter('node'):
+        node_pkg = node.attrib.get('package', '')
+        text_val = (node.attrib.get('text') or '').strip()
+        desc_val = (node.attrib.get('content-desc') or '').strip()
+        combined = ' '.join(part for part in (text_val, desc_val) if part)
+        if not combined:
+            continue
+        if node_pkg == package:
+            pkg_texts.append(combined.lower())
+        elif node_pkg == 'android' and bounds and _bounds_overlap(_parse_bounds(node.attrib.get('bounds')), bounds):
+            system_texts.append(combined.lower())
+
+    joined = ' | '.join(pkg_texts)
+    sys_joined = ' | '.join(system_texts)
+
+    if any(tok in sys_joined for tok in ("isn't responding", 'không phản hồi')) and any(tok in sys_joined for tok in ('close app', 'đóng ứng dụng')):
+        return 'disconnected'
+
+    if not pkg_texts:
+        return 'unknown'
+
+    auth_markers = (
+        'arkose', 'captcha', 'verify you are human', 'two-step verification',
+        '2-step verification', 'security notification', 'xác minh 2 bước',
+        'xác minh bạn là con người',
+    )
+    if any(marker in joined for marker in auth_markers):
+        return 'auth_required'
+    has_login = any(tok in joined for tok in ('log in', 'đăng nhập'))
+    has_login_form = any(tok in joined for tok in ('sign up', 'đăng ký', 'forgot password', 'quên mật khẩu', 'username/email/phone', 'mật khẩu'))
+    if has_login and has_login_form:
+        return 'auth_required'
+
+    disconnect_markers = (
+        'disconnected', 'lost connection', 'connection failed',
+        'same account launched', 'you were kicked', 'error code:', 'error code ',
+        'đã mất kết nối', 'mất kết nối', 'mã lỗi:', 'mã lỗi ',
+    )
+    if any(marker in joined for marker in disconnect_markers):
+        return 'disconnected'
+    if (('reconnect' in joined and 'leave' in joined) or ('kết nối lại' in joined and 'rời' in joined)):
+        return 'disconnected'
+
+    teleport_markers = (
+        'teleporting', 'joining server', 'waiting for an available server',
+        'đang dịch chuyển', 'đang tham gia',
+    )
+    if any(marker in joined for marker in teleport_markers):
+        return 'teleporting'
+
+    return 'active'
+
+def parse_proc_net_udp(text, uid=None):
+    """Extract established/active non-loopback remote UDP peers optionally filtered by Linux UID."""
+    if not text:
+        return None
+    lines = text.splitlines()
+    if len(lines) < 2:
+        return set()
+    peers = set()
+    for line in lines[1:]:
+        cols = line.split()
+        if len(cols) < 8:
+            continue
+        rem = cols[2]
+        sock_uid = cols[7]
+        if uid is not None and sock_uid != str(uid):
+            continue
+        if ':' not in rem:
+            continue
+        addr_hex, port_hex = rem.split(':', 1)
+        try:
+            port = int(port_hex, 16)
+        except ValueError:
+            continue
+        if port in (0, 53):
+            continue
+        if len(addr_hex) == 8 and addr_hex in ('00000000', '0100007F'):
+            continue
+        if len(addr_hex) == 32 and (addr_hex == '0' * 32 or addr_hex == '0' * 30 + '0100' or addr_hex.endswith('0100007F')):
+            continue
+        peers.add((addr_hex, port))
+    return peers
 
 def task_bounds(text, task):
     chunks = re.split(r'(?m)(?=^[ \t]*\*[ \t]*(?:Task|TaskRecord)\{)', text)
@@ -160,6 +366,9 @@ def grid_bounds(width, height, rows, cols, gap, top, bottom):
     return cells
 
 class Android:
+    def __init__(self):
+        self._uid_cache = {}
+
     def packages(self):
         code, out = root_command(['/system/bin/pm', 'list', 'packages', '--user', '0'], check=False)
         if code != 0 or not out:
@@ -174,6 +383,64 @@ class Android:
 
     def tasks(self):
         return root_command(['/system/bin/dumpsys', 'activity', 'activities'], check=False)[1]
+
+    def windows(self):
+        return root_command(['/system/bin/dumpsys', 'window', 'windows'], check=False)[1]
+
+    def surfaces(self):
+        return root_command(['/system/bin/dumpsys', 'SurfaceFlinger', '--list'], check=False)[1]
+
+    def ui_tree(self):
+        dump_path = '/data/local/tmp/noka_ui_dump.xml'
+        code, _ = root_command(['/system/bin/uiautomator', 'dump', '--compressed', dump_path], check=False)
+        if code != 0:
+            return ''
+        _, xml_content = root_command(['/system/bin/cat', dump_path], check=False)
+        return xml_content if '<hierarchy' in xml_content else ''
+
+    def package_uid(self, package):
+        if package in self._uid_cache:
+            return self._uid_cache[package]
+        data_dir = f'/data/data/{package}'
+        if os.path.exists(data_dir):
+            uid = os.stat(data_dir).st_uid
+            self._uid_cache[package] = uid
+            return uid
+        _, out = root_command(['/system/bin/stat', '-c', '%u', data_dir], check=False)
+        if out.strip().isdigit():
+            uid = int(out.strip())
+            self._uid_cache[package] = uid
+            return uid
+        return None
+
+    def udp_peers(self, package):
+        uid = self.package_uid(package)
+        if uid is None:
+            return None
+        peers = set()
+        readable = False
+        for proc_file in ('/proc/net/udp', '/proc/net/udp6'):
+            try:
+                content = Path(proc_file).read_text(encoding='utf-8', errors='ignore')
+            except OSError:
+                _, content = root_command(['/system/bin/cat', proc_file], check=False)
+            parsed = parse_proc_net_udp(content, uid=uid)
+            if parsed is not None:
+                readable = True
+                peers.update(parsed)
+        return peers if readable else None
+
+    def window_checks(self, package, ui_xml=None, tasks_text=None, windows_text=None, surface_text=None):
+        t_text = self.tasks() if tasks_text is None else tasks_text
+        w_text = self.windows() if windows_text is None else windows_text
+        s_text = self.surfaces() if surface_text is None else surface_text
+        u_xml = self.ui_tree() if ui_xml is None else ui_xml
+        return (
+            check_task_list(t_text, package),
+            check_window_manager(w_text, package),
+            check_surfaces(s_text, package),
+            check_screen_tree(u_xml, package),
+        )
 
     def size(self):
         _, output = root_command(['/system/bin/wm', 'size'])
@@ -194,12 +461,16 @@ class Android:
                 return line.strip()
         raise AgentError('Không tìm thấy màn hình mở ứng dụng: '+package)
 
-    def open(self, package, freeform=False):
-        component = self.resolve(package)
+    def open(self, package, freeform=False, place_id='', job_id=''):
         args = ['/system/bin/am', 'start', '-W', '--user', '0']
         if freeform:
             args += ['--windowingMode', '5']
-        args += ['-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER', '-n', component]
+        uri = build_roblox_uri(place_id, job_id)
+        if uri:
+            args += ['-a', 'android.intent.action.VIEW', '-d', uri, '-p', package]
+        else:
+            component = self.resolve(package)
+            args += ['-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER', '-n', component]
         root_command(args)
 
     def close(self, package):
@@ -215,9 +486,12 @@ class Android:
         except Exception:
             return False
 
-    def resize(self, package, bounds, launch=True):
+    def resize(self, package, bounds, launch=True, place_id='', job_id=''):
         if launch:
-            self.open(package, freeform=True)
+            if place_id:
+                self.open(package, freeform=True, place_id=place_id, job_id=job_id)
+            else:
+                self.open(package, freeform=True)
         deadline = time.monotonic()+12
         while time.monotonic() < deadline:
             task = parse_tasks(self.tasks()).get(package)
@@ -239,10 +513,44 @@ class Manager:
         self.private = Path(private)
         self.android = android or Android()
         self.state = read_json(self.private/'state.json', {'profiles': {}, 'watch': False, 'grid': None})
+        self.state['rejoinConfig'] = normalize_rejoin_config(self.state.get('rejoinConfig'), watch=self.state.get('watch', False))
         self.accounts = read_json(self.private/'accounts.json', {})
         self.health = {}
+        self.last_any_launch = None
+        self.last_any_launch_pkg = None
         self.public_key = None
         self._sync_usernames()
+
+    def _rejoin_config(self):
+        cfg = normalize_rejoin_config(self.state.get('rejoinConfig'), watch=self.state.get('watch', False))
+        cfg['enabled'] = bool(self.state.get('watch', cfg['enabled']))
+        return cfg
+
+    def _effective_target(self, profile, cfg):
+        place_id = (profile.get('placeId') or cfg.get('placeId') or '').strip()
+        job_id = (profile.get('jobId') if profile.get('placeId') else cfg.get('jobId')) or ''
+        return place_id, job_id.strip()
+
+    def _launch_package(self, package, place_id='', job_id='', force_stop=False):
+        if force_stop:
+            self.android.close(package)
+        if self.state.get('grid'):
+            settings = self.state['grid']
+            if not self.android.freeform():
+                raise AgentError('Không khôi phục được freeform. Tắt cấu hình lưới hoặc kiểm tra máy.')
+            cells = grid_bounds(*self.android.size(), **settings)
+            profile = self.profile(package)
+            if profile['slot'] > len(cells):
+                raise AgentError('Vị trí Noka nằm ngoài lưới.')
+            if place_id:
+                self.android.resize(package, cells[profile['slot']-1], place_id=place_id, job_id=job_id)
+            else:
+                self.android.resize(package, cells[profile['slot']-1])
+        else:
+            if place_id:
+                self.android.open(package, place_id=place_id, job_id=job_id)
+            else:
+                self.android.open(package)
 
     def _sync_usernames(self):
         changed = False
@@ -292,8 +600,13 @@ class Manager:
             if slot > 36:
                 continue
             occupied.add(slot)
-            suffix = package.removeprefix('free.noka')
-            label = 'Noka '+str(ord(suffix)-64) if len(suffix) == 1 and 'A' <= suffix <= 'Z' else package
+            if package.startswith('free.noka'):
+                suffix = package.removeprefix('free.noka')
+                label = 'Noka '+str(ord(suffix)-64) if len(suffix) == 1 and 'A' <= suffix <= 'Z' else package
+            elif package == 'com.roblox.client':
+                label = 'Roblox Quốc tế'
+            else:
+                label = 'Roblox '+package.removeprefix('com.roblox.client.')
             username = self.accounts.get(package, {}).get('username', '')
             profiles[package] = {'package': package, 'label': label, 'username': username, 'slot': slot, 'enabled': True, 'autoReopen': True}
         for p in profiles.values():
@@ -364,21 +677,28 @@ class Manager:
         self.save()
         return f'Đã lưu {len(records)} tài khoản riêng trên máy.'
 
-    def open_profile(self, package):
+    def open_profile(self, package, force_stop=False):
         profile = self.profile(package)
         profile['enabled'] = True
+        profile.pop('error', None)
+        profile['healthState'] = 'booting'
+        profile['healthMessage'] = 'Đang khởi chạy vào game.'
         self.health.pop(package, None)
+        cfg = self._rejoin_config()
+        place_id, job_id = self._effective_target(profile, cfg)
         self.save()
-        if self.state.get('grid'):
-            settings = self.state['grid']
-            if not self.android.freeform():
-                raise AgentError('Không khôi phục được freeform. Tắt cấu hình lưới hoặc kiểm tra máy.')
-            cells = grid_bounds(*self.android.size(), **settings)
-            if profile['slot'] > len(cells):
-                raise AgentError('Vị trí Noka nằm ngoài lưới.')
-            self.android.resize(package, cells[profile['slot']-1])
-        else:
-            self.android.open(package)
+        self._launch_package(package, place_id=place_id, job_id=job_id, force_stop=force_stop)
+        now = time.monotonic()
+        self.health[package] = {
+            'missing': 0, 'next': 0, 'attempts': deque(), 'healthy': None,
+            'last_check': now, 'last_launch': now, 'window_closed_since': None,
+            'disconnect_since': None, 'teleport_at': None, 'last_peers': set(),
+            'socket_lost_since': None, 'auth_paused': False,
+        }
+        self.last_any_launch = now
+        self.last_any_launch_pkg = package
+        profile['lastRejoinAt'] = int(time.time() * 1000)
+        self.save()
 
     def execute(self, command):
         action = command['action']
@@ -389,11 +709,15 @@ class Manager:
         if action == 'profile':
             item = command['profile']
             self.profile(item['package'])
-            valid_keys = {'package', 'label', 'username', 'slot', 'enabled', 'autoReopen'}
+            valid_keys = {'package', 'label', 'username', 'slot', 'enabled', 'autoReopen', 'placeId', 'jobId'}
             if not set(item).issubset(valid_keys) or not {'package', 'label', 'username', 'slot', 'enabled'}.issubset(item) or type(item['slot']) is not int or not 1 <= item['slot'] <= 36 or type(item['enabled']) is not bool:
                 raise AgentError('Thông tin tài khoản không hợp lệ.')
             if 'autoReopen' in item and type(item['autoReopen']) is not bool:
                 raise AgentError('Cài đặt tự mở lại không hợp lệ.')
+            if 'placeId' in item and (not isinstance(item['placeId'], str) or not re.fullmatch(r'\d{0,20}', item['placeId'].strip())):
+                raise AgentError('Place ID không hợp lệ.')
+            if 'jobId' in item and (not isinstance(item['jobId'], str) or not re.fullmatch(r'[A-Za-z0-9-]{0,64}', item['jobId'].strip())):
+                raise AgentError('Job ID không hợp lệ.')
             previous_slot = self.state['profiles'][item['package']]['slot']
             for other in self.state['profiles'].values():
                 if other['package'] != item['package'] and other['slot'] == item['slot']:
@@ -405,13 +729,44 @@ class Manager:
             if type(command['enabled']) is not bool:
                 raise AgentError('Trạng thái tự mở lại không hợp lệ.')
             self.state['watch'] = command['enabled']
+            self.state['rejoinConfig'] = normalize_rejoin_config(self.state.get('rejoinConfig'), watch=command['enabled'])
+            self.state['rejoinConfig']['enabled'] = command['enabled']
             self.health.clear()
             self.save()
             return 'Đã bật tự mở lại.' if command['enabled'] else 'Đã tắt tự mở lại.'
+        if action == 'set_rejoin_config':
+            raw = command.get('config')
+            expected_keys = set(DEFAULT_REJOIN_CONFIG)
+            if not isinstance(raw, dict) or set(raw) != expected_keys:
+                raise AgentError('Cấu hình Auto-rejoin thiếu hoặc dư trường.')
+            for key in ('enabled', 'teleportDetection', 'rejoinOnCrash', 'detectDisconnectUi'):
+                if type(raw.get(key)) is not bool:
+                    raise AgentError('Cấu hình Auto-rejoin không hợp lệ.')
+            if not isinstance(raw.get('placeId'), str) or not re.fullmatch(r'\d{0,20}', raw['placeId'].strip()):
+                raise AgentError('Place ID phải là chữ số.')
+            if not isinstance(raw.get('jobId'), str) or not re.fullmatch(r'[A-Za-z0-9-]{0,64}', raw['jobId'].strip()):
+                raise AgentError('Job ID không hợp lệ.')
+            for key, (low, high) in REJOIN_CONFIG_BOUNDS.items():
+                val = raw.get(key)
+                if type(val) is not int or not (low <= val <= high):
+                    raise AgentError(f'Tham số {key} nằm ngoài giới hạn ({low}–{high}).')
+            cfg = normalize_rejoin_config(raw)
+            self.state['rejoinConfig'] = cfg
+            self.state['watch'] = cfg['enabled']
+            for health in self.health.values():
+                health['last_check'] = None
+                health['window_closed_since'] = None
+                health['disconnect_since'] = None
+                health['socket_lost_since'] = None
+            self.save()
+            target = f"Place {cfg['placeId']}" if cfg['placeId'] else 'mặc định'
+            return f"Đã lưu cấu hình Auto-rejoin ({'Bật' if cfg['enabled'] else 'Tắt'}, {target})."
         if action == 'close':
             profile = self.profile(command['package'])
             profile['enabled'] = False
             profile['autoReopen'] = False
+            profile['healthState'] = 'stopped'
+            profile['healthMessage'] = 'Đã đóng thủ công từ dashboard.'
             self.save()
             self.android.close(profile['package'])
             return 'Đã đóng Noka và tạm dừng tự mở lại cho bản này.'
@@ -421,10 +776,20 @@ class Manager:
             profile['autoReopen'] = True
             self.open_profile(command['package'])
             return 'Đã mở Noka.'
+        if action == 'rejoin':
+            profile = self.profile(command['package'])
+            profile['enabled'] = True
+            profile['autoReopen'] = True
+            self.open_profile(command['package'], force_stop=True)
+            return f"Đã rejoin {profile['label']}."
         if action == 'open_all':
-            for package, profile in self.state['profiles'].items():
-                if profile['enabled']:
-                    self.open_profile(package)
+            cfg = self._rejoin_config()
+            delay = cfg['delayBetweenClonesSec']
+            selected = sorted((p for p in self.state['profiles'].values() if p['enabled']), key=lambda p: p['slot'])
+            for idx, profile in enumerate(selected):
+                if idx > 0 and delay > 0:
+                    time.sleep(delay)
+                self.open_profile(profile['package'])
             try:
                 from noka_login import tap_login_buttons
                 time.sleep(2)
@@ -432,6 +797,17 @@ class Manager:
             except Exception:
                 pass
             return 'Đã mở các bản Noka đang bật quản lý.'
+        if action == 'rejoin_all':
+            cfg = self._rejoin_config()
+            delay = cfg['delayBetweenClonesSec']
+            selected = sorted((p for p in self.state['profiles'].values() if p['enabled']), key=lambda p: p['slot'])
+            if not selected:
+                raise AgentError('Chưa có bản nào đang bật quản lý.')
+            for idx, profile in enumerate(selected):
+                if idx > 0 and delay > 0:
+                    time.sleep(delay)
+                self.open_profile(profile['package'], force_stop=True)
+            return f'Đã rejoin lần lượt {len(selected)} bản.'
         if action == 'grid':
             settings = {k: command[k] for k in ('rows', 'cols', 'gap', 'top', 'bottom')}
             self.layout(settings)
@@ -511,42 +887,241 @@ class Manager:
             return 'Đã cập nhật trạng thái.'
         raise AgentError('Lệnh không được hỗ trợ.')
 
+    def _new_health(self):
+        return {
+            'missing': 0,
+            'next': 0,
+            'attempts': deque(),
+            'healthy': None,
+            'last_check': None,
+            'last_launch': None,
+            'window_closed_since': None,
+            'disconnect_since': None,
+            'teleport_at': None,
+            'last_peers': set(),
+            'socket_lost_since': None,
+            'auth_paused': False,
+        }
+
+    def _can_launch(self, package, health, now, cfg):
+        if now < health['next']:
+            return False
+        if health['last_launch'] is not None and now - health['last_launch'] < cfg['delayAfterLaunchSec']:
+            return False
+        last_pkg = getattr(self, 'last_any_launch_pkg', None)
+        if cfg['delayBetweenClonesSec'] > 0 and self.last_any_launch is not None and last_pkg != package:
+            if now - self.last_any_launch < cfg['delayBetweenClonesSec']:
+                return False
+        return True
+
+    def _recover_package(self, package, profile, health, now, cfg, reason, force_stop=True):
+        if not self._can_launch(package, health, now, cfg):
+            return False
+        window_sec = max(600, cfg['maxRejoinIntervalSec'] * 2)
+        while health['attempts'] and now - health['attempts'][0] > window_sec:
+            health['attempts'].popleft()
+        limit = cfg['retryAttempts']
+        if limit > 0 and len(health['attempts']) >= limit:
+            profile['healthState'] = 'paused_retries'
+            profile['healthMessage'] = f'Đã đạt giới hạn {limit} lần thử lại; tạm nghỉ để tránh lặp mở vô hạn.'
+            profile['error'] = profile['healthMessage']
+            health['next'] = health['attempts'][0] + max(600, cfg['maxRejoinIntervalSec'])
+            return False
+
+        health['healthy'] = None
+        health['attempts'].append(now)
+        step = min(len(health['attempts']) - 1, 10)
+        wait_sec = min(cfg['maxRejoinIntervalSec'], cfg['backoffSec'] * (2 ** step))
+        health['next'] = now + max(wait_sec, cfg['delayAfterLaunchSec'])
+        health['window_closed_since'] = None
+        health['disconnect_since'] = None
+        health['socket_lost_since'] = None
+        health['missing'] = 0
+        place_id, job_id = self._effective_target(profile, cfg)
+        try:
+            self._launch_package(package, place_id=place_id, job_id=job_id, force_stop=force_stop)
+            health['last_launch'] = now
+            self.last_any_launch = now
+            self.last_any_launch_pkg = package
+            profile['retryCount'] = len(health['attempts'])
+            profile['lastRejoinAt'] = int(time.time() * 1000)
+            profile['healthState'] = 'booting'
+            profile['healthMessage'] = reason
+            profile.pop('error', None)
+            return True
+        except (AgentError, IndexError) as error:
+            profile['error'] = str(error)
+            profile['healthMessage'] = str(error)
+            return False
+
+    def _snapshot_cycle(self):
+        snapshot = {'tasks': None, 'windows': None, 'surfaces': None, 'ui_xml': None}
+        if hasattr(self.android, 'tasks') and hasattr(self.android, 'window_checks'):
+            try:
+                snapshot['tasks'] = self.android.tasks()
+            except Exception:
+                snapshot['tasks'] = ''
+        if hasattr(self.android, 'windows'):
+            try:
+                snapshot['windows'] = self.android.windows()
+            except Exception:
+                snapshot['windows'] = ''
+        if hasattr(self.android, 'surfaces'):
+            try:
+                snapshot['surfaces'] = self.android.surfaces()
+            except Exception:
+                snapshot['surfaces'] = ''
+        if hasattr(self.android, 'ui_tree'):
+            try:
+                snapshot['ui_xml'] = self.android.ui_tree()
+            except Exception:
+                snapshot['ui_xml'] = ''
+        return snapshot
+
+    def _check_running_health(self, package, profile, health, now, cfg, snapshot):
+        in_boot_grace = health['last_launch'] is not None and now - health['last_launch'] < cfg['bootGraceSec']
+        ui_xml = snapshot.get('ui_xml')
+
+        bounds = None
+        if snapshot.get('tasks'):
+            tid = parse_tasks(snapshot['tasks']).get(package)
+            if tid is not None:
+                bounds, _ = task_bounds(snapshot['tasks'], tid)
+
+        ui_state = inspect_ui_state(ui_xml, package, bounds=bounds) if ui_xml else 'unknown'
+
+        if ui_state == 'auth_required':
+            health['auth_paused'] = True
+            health['healthy'] = None
+            profile['loginStatus'] = 'manual_verification_required'
+            profile['healthState'] = 'auth_required'
+            profile['healthMessage'] = 'Phát hiện màn hình đăng nhập hoặc CAPTCHA — tạm dừng tự rejoin để bạn xác minh thủ công.'
+            return
+
+        if in_boot_grace:
+            health['window_closed_since'] = None
+            health['disconnect_since'] = None
+            profile['healthState'] = 'booting'
+            profile['healthMessage'] = 'Đang trong thời gian chờ khởi động game (Boot grace).'
+            return
+
+        if ui_state == 'teleporting' and cfg['teleportDetection']:
+            health['teleport_at'] = now
+            health['disconnect_since'] = None
+            profile['healthState'] = 'teleporting'
+            profile['healthMessage'] = 'Phát hiện đang dịch chuyển server (Teleport grace).'
+
+        peers = None
+        if hasattr(self.android, 'udp_peers') and (cfg['teleportDetection'] or cfg['networkTimeoutSec'] > 0):
+            try:
+                peers = self.android.udp_peers(package)
+            except Exception:
+                peers = None
+
+        if peers is not None:
+            if peers and health['last_peers'] and peers != health['last_peers'] and cfg['teleportDetection']:
+                health['teleport_at'] = now
+                health['disconnect_since'] = None
+                profile['healthState'] = 'teleporting'
+                profile['healthMessage'] = 'Phát hiện chuyển kết nối server UDP (Teleport grace).'
+            if peers:
+                health['last_peers'] = set(peers)
+                health['socket_lost_since'] = None
+            elif cfg['networkTimeoutSec'] > 0 and health['last_peers']:
+                in_tp_grace = cfg['teleportDetection'] and health['teleport_at'] is not None and now - health['teleport_at'] < cfg['teleportGraceSec']
+                if not in_tp_grace:
+                    if health['socket_lost_since'] is None:
+                        health['socket_lost_since'] = now
+                    elif now - health['socket_lost_since'] >= cfg['networkTimeoutSec']:
+                        profile['healthState'] = 'disconnected'
+                        self._recover_package(package, profile, health, now, cfg, 'Mất kết nối mạng UDP quá thời gian chờ; đang rejoin.', force_stop=True)
+                        return
+
+        if cfg['detectDisconnectUi'] and ui_state == 'disconnected':
+            in_tp_grace = cfg['teleportDetection'] and health['teleport_at'] is not None and now - health['teleport_at'] < cfg['teleportGraceSec']
+            if in_tp_grace:
+                health['disconnect_since'] = None
+                profile['healthState'] = 'teleporting'
+                profile['healthMessage'] = 'Bỏ qua ngắt kết nối ngắn trong thời gian Teleport grace.'
+            else:
+                if health['disconnect_since'] is None:
+                    health['disconnect_since'] = now
+                profile['healthState'] = 'disconnected'
+                profile['healthMessage'] = 'Phát hiện màn hình mất kết nối; đang chờ xác nhận.'
+                if now - health['disconnect_since'] >= cfg['disconnectConfirmSec']:
+                    self._recover_package(package, profile, health, now, cfg, 'Xác nhận mất kết nối; đang force-stop và rejoin.', force_stop=True)
+                    return
+        else:
+            health['disconnect_since'] = None
+
+        if cfg['rejoinOnCrash'] and hasattr(self.android, 'window_checks'):
+            checks = self.android.window_checks(
+                package,
+                ui_xml=ui_xml,
+                tasks_text=snapshot.get('tasks'),
+                windows_text=snapshot.get('windows'),
+                surface_text=snapshot.get('surfaces'),
+            )
+            closed, readable = evaluate_window_closed(checks)
+            if not readable:
+                # Never treat an unreadable window dump as a closed window.
+                health['window_closed_since'] = None
+            elif closed:
+                if health['window_closed_since'] is None:
+                    health['window_closed_since'] = now
+                profile['healthState'] = 'window_closed'
+                profile['healthMessage'] = 'Cửa sổ game chưa hiển thị (4 lớp xác nhận).'
+                if now - health['window_closed_since'] >= cfg['windowGraceSec']:
+                    live_min = bool(peers) and cfg['networkTimeoutSec'] > 0
+                    reason = 'Cửa sổ bị thu nhỏ với kết nối sống; đang mở lại.' if live_min else 'Cửa sổ game bị đóng quá Window grace; đang rejoin.'
+                    self._recover_package(package, profile, health, now, cfg, reason, force_stop=not live_min)
+                    return
+            else:
+                health['window_closed_since'] = None
+
+        health['healthy'] = health['healthy'] or now
+        if profile.get('healthState') not in ('teleporting', 'disconnected', 'window_closed'):
+            profile['healthState'] = 'running'
+            profile['healthMessage'] = 'Đang hoạt động bình thường.'
+        if now - health['healthy'] >= 60:
+            health['attempts'].clear()
+            profile['retryCount'] = 0
+            profile.pop('error', None)
+
     def watchdog(self, now=None):
-        if not self.state['watch']:
+        cfg = self._rejoin_config()
+        if not self.state.get('watch') or not cfg['enabled']:
             return
         now = time.monotonic() if now is None else now
-        for package, profile in self.state['profiles'].items():
+        snapshot = None
+        for package, profile in sorted(self.state['profiles'].items(), key=lambda item: item[1].get('slot', 99)):
             if not profile.get('enabled', True) or not profile.get('autoReopen', True):
                 continue
-            health = self.health.setdefault(package, {'missing': 0, 'next': 0, 'attempts': deque(), 'healthy': None})
+            health = self.health.setdefault(package, self._new_health())
+            if health.get('auth_paused'):
+                profile['healthState'] = 'auth_required'
+                continue
+            if health['last_check'] is not None and now - health['last_check'] < cfg['checkIntervalSec']:
+                continue
+            health['last_check'] = now
+
             if self.android.running(package):
                 health['missing'] = 0
-                health['healthy'] = health['healthy'] or now
-                if now-health['healthy'] >= 60:
-                    health['attempts'].clear()
-                    profile.pop('error', None)
+                if snapshot is None:
+                    snapshot = self._snapshot_cycle()
+                self._check_running_health(package, profile, health, now, cfg, snapshot)
                 continue
+
             health['healthy'] = None
+            health['window_closed_since'] = None
+            health['disconnect_since'] = None
+            health['socket_lost_since'] = None
             health['missing'] += 1
-            if health['missing'] < 2 or now < health['next']:
+            if profile.get('healthState') != 'paused_retries' or now >= health['next']:
+                profile['healthState'] = 'crashed' if health['missing'] >= 2 else 'stopped'
+            if not cfg['rejoinOnCrash'] or health['missing'] < 2:
                 continue
-            while health['attempts'] and now-health['attempts'][0] > 600:
-                health['attempts'].popleft()
-            if len(health['attempts']) >= 5:
-                profile['error'] = 'Ứng dụng đóng liên tục; tạm nghỉ để tránh lặp mở vô hạn.'
-                health['next'] = health['attempts'][0]+600
-                continue
-            health['attempts'].append(now)
-            health['next'] = now+min(300, 30*2**(len(health['attempts'])-1))
-            try:
-                # Do not reset health here: repeated crashes must keep the retry budget.
-                if self.state.get('grid'):
-                    cells = grid_bounds(*self.android.size(), **self.state['grid'])
-                    self.android.resize(package, cells[profile['slot']-1])
-                else:
-                    self.android.open(package)
-            except (AgentError, IndexError) as error:
-                profile['error'] = str(error)
+            self._recover_package(package, profile, health, now, cfg, 'Tiến trình bị đóng; đang tự mở lại.', force_stop=False)
 
     def telemetry(self):
         profiles = {}
@@ -563,6 +1138,8 @@ class Manager:
             if account and account.get('username') and not item.get('username'):
                 item['username'] = account['username']
             item['appStatus'] = 'running' if is_running else 'stopped'
+            if 'healthState' not in item:
+                item['healthState'] = 'running' if is_running else 'stopped'
             if package in tasks:
                 item['taskId'] = tasks[package]
             # RTDB keys cannot contain periods; the package stays as a string field.
@@ -571,7 +1148,8 @@ class Manager:
         _, android = root_command(['/system/bin/getprop', 'ro.build.version.release'], check=False)
         return {'lastSeen': int(time.time()*1000), 'model': model.strip() or 'Redfinger Device',
                 'android': android.strip() or 'Android',
-                'watch': self.state['watch'], 'profiles': profiles, 'grid': self.state.get('grid'),
+                'watch': self.state['watch'], 'rejoinConfig': self._rejoin_config(),
+                'profiles': profiles, 'grid': self.state.get('grid'),
                 'freeform': bool(self.android.freeform()), 'publicKey': self.public_key}
 
 def process_command(firebase, manager, command, journal):

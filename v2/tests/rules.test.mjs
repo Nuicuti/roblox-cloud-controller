@@ -87,3 +87,15 @@ test('verified owner email bootstraps access but an unverified email cannot', as
   const outsider=env.authenticatedContext('outsider',{email:'other@example.test',email_verified:true}).database();
   await assertFails(get(ref(outsider,base+'/ownerEmail')));
 });
+test('rejoin config and global roblox packages pass rules while invalid bounds fail', async () => {
+  const db=env.authenticatedContext('ownerA',{email:'operator@example.test'}).database();
+  const baseCmd={createdAt:Date.now(),expiresAt:Date.now()+120000};
+  const config={enabled:true,placeId:'1730877806',jobId:'',checkIntervalSec:15,delayAfterLaunchSec:10,
+    delayBetweenClonesSec:15,bootGraceSec:150,windowGraceSec:90,disconnectConfirmSec:10,networkTimeoutSec:0,
+    maxRejoinIntervalSec:300,retryAttempts:0,backoffSec:10,teleportDetection:true,teleportGraceSec:120,
+    rejoinOnCrash:true,detectDisconnectUi:true};
+  await assertSucceeds(set(ref(db,base+'/devices/deviceA/inbox/cfg1'),{...baseCmd,id:'cfg1',action:'set_rejoin_config',config}));
+  await assertSucceeds(set(ref(db,base+'/devices/deviceA/inbox/rej1'),{...baseCmd,id:'rej1',action:'rejoin',package:'com.roblox.client'}));
+  await assertFails(set(ref(db,base+'/devices/deviceA/inbox/bad1'),{...baseCmd,id:'bad1',action:'rejoin',package:'com.android.settings'}));
+  await assertFails(set(ref(db,base+'/devices/deviceA/inbox/bad2'),{...baseCmd,id:'bad2',action:'set_rejoin_config',config:{...config,checkIntervalSec:1}}));
+});

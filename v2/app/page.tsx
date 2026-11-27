@@ -2,25 +2,40 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GoogleAuthProvider, onAuthStateChanged, signInWithEmailAndPassword, signInWithPopup, signOut, type User } from "firebase/auth";
 import { Activity, AlertTriangle, ArrowRight, Check, ChevronRight, CircleHelp, Cpu, Grid2X2, Layers3, LayoutDashboard,
-  Link2, LoaderCircle, LogOut, Monitor, Plus, RefreshCw, ScanLine, Settings2, ShieldCheck, Smartphone, Square, X } from "lucide-react";
+  Link2, LoaderCircle, LogOut, Monitor, Plus, RefreshCw, RotateCcw, ScanLine, Settings2, ShieldCheck, SlidersHorizontal, Smartphone, Square, X } from "lucide-react";
 import { clientAuth } from "@/lib/firebase-client";
-import { type Command, type Device, type Profile, type Result, isOnline } from "@/lib/contracts";
+import { DEFAULT_REJOIN_CONFIG, type Command, type Device, type HealthState, type Profile, type RejoinConfig, type Result, isOnline } from "@/lib/contracts";
 import { sealAccounts } from "@/lib/seal";
 
 const auth = typeof window !== "undefined" ? clientAuth() : null;
 const actionNames: Record<string, string> = {
-  scan: "Quét bản Noka",
-  open_all: "Mở các bản Noka",
-  set_watch: "Tự mở lại (toàn máy)",
-  profile: "Lưu cấu hình Noka",
-  open: "Mở Noka",
-  close: "Đóng Noka",
+  scan: "Quét bản Noka / Roblox",
+  open_all: "Mở các bản đang bật",
+  rejoin_all: "Rejoin tất cả",
+  set_watch: "Auto-rejoin loop (toàn máy)",
+  set_rejoin_config: "Lưu cấu hình Auto-rejoin",
+  profile: "Lưu cấu hình bản",
+  open: "Mở ứng dụng",
+  close: "Đóng ứng dụng",
+  rejoin: "Rejoin vào game",
   grid: "Xếp lưới",
   enable_freeform: "Bật cửa sổ tự do",
   restore_windowing: "Khôi phục cửa sổ",
   status: "Cập nhật trạng thái",
   set_accounts: "Gửi tài khoản",
-  login_all: "Nạp cookie và mở Noka"
+  login_all: "Nạp cookie và mở"
+};
+
+const healthLabels: Record<HealthState, { text: string; tone: "green" | "blue" | "yellow" | "red" | "gray" }> = {
+  running: { text: "Đang hoạt động", tone: "green" },
+  booting: { text: "Đang khởi động", tone: "blue" },
+  teleporting: { text: "Đang chuyển server", tone: "blue" },
+  disconnected: { text: "Mất kết nối", tone: "red" },
+  window_closed: { text: "Đóng cửa sổ", tone: "red" },
+  crashed: { text: "Crash tiến trình", tone: "red" },
+  auth_required: { text: "Cần đăng nhập / CAPTCHA thủ công", tone: "yellow" },
+  paused_retries: { text: "Tạm nghỉ Retry", tone: "red" },
+  stopped: { text: "Đã tắt", tone: "gray" },
 };
 
 function sampleDevice(): Device {
@@ -38,7 +53,9 @@ function sampleDevice(): Device {
       cookieStatus: n === 4 ? "invalid" : "valid",
       sqliteStatus: n === 4 ? "failed" : "written",
       appStatus: n === 4 ? "stopped" : "running",
-      loginStatus: "unverified_ingame",
+      loginStatus: n === 4 ? "manual_verification_required" : "unverified_ingame",
+      healthState: n === 4 ? "auth_required" : "running",
+      healthMessage: n === 4 ? "Phát hiện màn hình đăng nhập hoặc CAPTCHA — tạm dừng tự rejoin để bạn xác minh thủ công." : "Đang hoạt động bình thường.",
       loginMessage: n === 4 ? "Cookie không hợp lệ" : "Cookie hợp lệ, đã ghi và mở Noka."
     };
   });
@@ -50,6 +67,7 @@ function sampleDevice(): Device {
       model: "Redfinger Cloud",
       android: "12",
       watch: true,
+      rejoinConfig: { ...DEFAULT_REJOIN_CONFIG, placeId: "1730877806" },
       profiles,
       grid: { rows: 2, cols: 2 },
       freeform: true
@@ -72,12 +90,22 @@ export default function Dashboard() {
   const [batchInput, setBatchInput] = useState("");
   const [rows, setRows] = useState(2);
   const [cols, setCols] = useState(2);
-  const [tab, setTab] = useState<"accounts" | "activity">("accounts");
+  const [tab, setTab] = useState<"accounts" | "rejoin" | "activity">("accounts");
+  const [rejoinDraft, setRejoinDraft] = useState<RejoinConfig>(DEFAULT_REJOIN_CONFIG);
+  const [rejoinDirty, setRejoinDirty] = useState(false);
 
   const current = devices.find(d => d.id === selected) ?? devices[0];
   const profiles = Object.values(current?.telemetry?.profiles ?? {}).sort((a, b) => a.label.localeCompare(b.label, "vi", { numeric: true }));
   const online = isOnline(current?.telemetry?.lastSeen);
   const results = Object.values(current?.results ?? {}).sort((a, b) => b.createdAt-a.createdAt);
+
+  useEffect(() => {
+    if (!rejoinDirty && current?.telemetry?.rejoinConfig) {
+      setRejoinDraft(current.telemetry.rejoinConfig);
+    } else if (!rejoinDirty && current?.telemetry) {
+      setRejoinDraft({ ...DEFAULT_REJOIN_CONFIG, enabled: Boolean(current.telemetry.watch) });
+    }
+  }, [current?.id, current?.telemetry?.rejoinConfig, current?.telemetry?.watch, rejoinDirty]);
 
   useEffect(() => {
     if (!auth) { setInitializing(false); return; }
@@ -210,7 +238,7 @@ export default function Dashboard() {
           <span>DANH SÁCH MÁY</span>
           <button title="Ghép máy" onClick={() => setPair(true)} disabled={demo}><Plus size={16} /></button>
         </div>
-        {devices.map(device => <button key={device.id} className={`device-nav ${current?.id === device.id ? "selected" : ""}`} onClick={() => { setSelected(device.id); setTab("accounts"); }}>
+        {devices.map(device => <button key={device.id} className={`device-nav ${current?.id === device.id ? "selected" : ""}`} onClick={() => { setSelected(device.id); setTab("accounts"); setRejoinDirty(false); }}>
           <span className={`dot ${isOnline(device.telemetry?.lastSeen) ? "green" : "gray"}`} />
           <span>{device.meta.name}<small>{Object.keys(device.telemetry?.profiles ?? {}).length} bản Noka</small></span>
           <ChevronRight size={14} />
@@ -280,8 +308,8 @@ export default function Dashboard() {
           <div className="watchdog-banner">
             <AlertTriangle size={18} />
             <div>
-              <b>Quy tắc tự mở lại (Watchdog) & Giới hạn kỹ thuật:</b>
-              <span> Watchdog phát hiện và mở lại ứng dụng khi tiến trình Android bị kết thúc (crash/kill). Giới hạn: Chưa phát hiện được trường hợp game bị treo màn hình (freeze/ANR) hoặc mất kết nối trong game khi tiến trình Roblox vẫn còn chạy.</span>
+              <b>Auto-rejoin Loop đa lớp (Không cần giải CAPTCHA):</b>
+              <span> Giám sát Crash bằng 4 lớp độc lập (Task list, Window manager, Surfaces, Screen tree), phát hiện màn hình Disconnect kèm Teleport grace và tự vào lại Place ID qua deep link. Nếu gặp màn hình đăng nhập hoặc CAPTCHA, hệ thống sẽ tự tạm dừng tab đó để bạn xác minh thủ công.</span>
             </div>
           </div>
 
@@ -289,13 +317,14 @@ export default function Dashboard() {
             <div className="main-panel">
               <div className="panel-tabs">
                 <button className={tab === "accounts" ? "chosen" : ""} onClick={() => setTab("accounts")}>Tài khoản & Trạng thái <span>{profiles.length}</span></button>
+                <button className={tab === "rejoin" ? "chosen" : ""} onClick={() => setTab("rejoin")}>Auto-Rejoin Loop</button>
                 <button className={tab === "activity" ? "chosen" : ""} onClick={() => setTab("activity")}>Nhật ký lệnh</button>
               </div>
 
               {tab === "accounts" ? <>
                 <div className="panel-toolbar">
                   <div>
-                    <h3>Danh sách bản Noka clone</h3>
+                    <h3>Danh sách bản Noka / Roblox</h3>
                     <p>Mỗi bản clone có cấu hình tài khoản, vị trí ô và trạng thái watchdog riêng biệt.</p>
                   </div>
                   <button className="secondary compact" disabled={blocked || !profiles.length || !current.telemetry?.publicKey} onClick={() => { setBatchInput(""); setCredentials(true); }}>
@@ -304,12 +333,14 @@ export default function Dashboard() {
                 </div>
 
                 <div className="account-list">
-                  {profiles.map(profile => (
+                  {profiles.map(profile => {
+                    const hs = profile.healthState ? healthLabels[profile.healthState] : null;
+                    return (
                     <div key={profile.package} className="account-row">
                       <div className="noka-icon">{profile.label.match(/\d+/)?.[0] ?? "N"}</div>
                       <div className="account-info">
                         <b>{profile.label} <small style={{ display: "inline", color: "#8a96a8" }}>({profile.package})</small></b>
-                        <span>Tài khoản: <strong>{profile.username || "Chưa gán tài khoản"}</strong> · Vị trí ô: {profile.slot}</span>
+                        <span>Tài khoản: <strong>{profile.username || "Chưa gán tài khoản"}</strong> · Ô: {profile.slot}{profile.placeId ? ` · Place: ${profile.placeId}` : ""}</span>
                         
                         <div className="status-badges">
                           {profile.cookieStatus === "valid" ? (
@@ -332,26 +363,32 @@ export default function Dashboard() {
                             Tiến trình: {profile.running && online ? "Đang chạy" : "Đã tắt"}
                           </span>
 
+                          {hs && <span className={`status-pill ${hs.tone}`}>{hs.text}</span>}
+
                           <span className={`status-pill ${profile.autoReopen !== false ? "blue" : "gray"}`}>
                             Tự mở lại: {profile.autoReopen !== false ? "Bật" : "Tắt"}
                           </span>
 
-                          <span className="status-pill yellow" title="Không kết luận đăng nhập thành công khi chưa kiểm tra màn hình trong game">
-                            Phiên trong game: Chưa xác minh
-                          </span>
+                          {typeof profile.retryCount === "number" && profile.retryCount > 0 && (
+                            <span className="status-pill gray">Thử lại: {profile.retryCount}</span>
+                          )}
                         </div>
 
                         {profile.error && <small style={{ color: "#f29494" }}>Lỗi: {profile.error}</small>}
-                        {profile.loginMessage && !profile.error && <small>{profile.loginMessage}</small>}
+                        {profile.healthMessage && !profile.error && <small>{profile.healthMessage}</small>}
+                        {profile.loginMessage && !profile.error && !profile.healthMessage && <small>{profile.loginMessage}</small>}
                       </div>
 
                       <button className="text-button" disabled={blocked} onClick={() => setEditing(profile)}>Sửa</button>
+                      <button className="row-action" disabled={blocked} onClick={() => issue({ action: "rejoin", package: profile.package })} title="Force-stop và vào lại Place ID">
+                        <RotateCcw size={13} /> Rejoin
+                      </button>
                       <button className="row-action" disabled={blocked} onClick={() => issue({ action: profile.running ? "close" : "open", package: profile.package })}>
                         {profile.running ? <Square size={13} /> : <ArrowRight size={15} />}
                         {profile.running ? "Đóng" : "Mở"}
                       </button>
                     </div>
-                  ))}
+                  );})}
                 </div>
 
                 {!profiles.length && <div className="inline-empty">Chọn “Quét Noka” để nhận diện các bản Roblox clone đã cài trên máy Redfinger.</div>}
@@ -360,7 +397,90 @@ export default function Dashboard() {
                   <ShieldCheck size={15} />
                   <span>Bảo mật: Mật khẩu và Cookie được mã hóa bằng cặp khóa RSA-2048 / AES-GCM của thiết bị. Chỉ máy đích giải mã được.</span>
                 </div>
-              </> : <div className="command-list">
+              </> : tab === "rejoin" ? <form className="rejoin-panel" onSubmit={async event => {
+                event.preventDefault();
+                try {
+                  await send({ action: "set_rejoin_config", config: rejoinDraft });
+                  setRejoinDirty(false);
+                } catch {}
+              }}>
+                <div className="rejoin-header">
+                  <div className="watch-heading">
+                    <span className="watch-icon"><SlidersHorizontal size={18} /></span>
+                    <div>
+                      <h3>Auto-rejoin loop <span className="status-pill blue">ALL CLONES</span></h3>
+                      <p>Cấu hình mặc định cho mọi bản clone trên máy; không dùng auto-solve CAPTCHA.</p>
+                    </div>
+                  </div>
+                  <button type="button" role="switch" aria-checked={rejoinDraft.enabled} className={`switch ${rejoinDraft.enabled ? "on" : ""}`} onClick={() => { setRejoinDirty(true); setRejoinDraft(prev => ({ ...prev, enabled: !prev.enabled })); }}><span /></button>
+                </div>
+
+                <div className="rejoin-target-grid">
+                  <label>
+                    Place ID (Deep link vào thẳng game)
+                    <input value={rejoinDraft.placeId} pattern="\d{0,20}" placeholder="Ví dụ: 1730877806 (để trống nếu chỉ mở app)" onChange={e => { setRejoinDirty(true); setRejoinDraft(prev => ({ ...prev, placeId: e.target.value.replace(/\D/g, "").slice(0, 20) })); }} />
+                  </label>
+                  <label>
+                    Job ID / Server ID (Tùy chọn)
+                    <input value={rejoinDraft.jobId} maxLength={64} placeholder="Để trống để vào server bất kỳ" onChange={e => { setRejoinDirty(true); setRejoinDraft(prev => ({ ...prev, jobId: e.target.value.replace(/[^A-Za-z0-9-]/g, "").slice(0, 64) })); }} />
+                  </label>
+                </div>
+
+                <div className="rejoin-sliders">
+                  <SliderField label="Check interval" unit="s" min={3} max={60} value={rejoinDraft.checkIntervalSec} hint="Chu kỳ đọc trạng thái app, cửa sổ và tiến trình" onChange={v => { setRejoinDirty(true); setRejoinDraft(p => ({ ...p, checkIntervalSec: v })); }} />
+                  <SliderField label="Delay after launch" unit="s" min={0} max={120} value={rejoinDraft.delayAfterLaunchSec} hint="Thời gian chờ tối thiểu trước khi mở lại cùng 1 bản clone" onChange={v => { setRejoinDirty(true); setRejoinDraft(p => ({ ...p, delayAfterLaunchSec: v })); }} />
+                  <SliderField label="Delay between clones" unit="s" min={0} max={60} value={rejoinDraft.delayBetweenClonesSec} hint="Giãn cách khi khởi chạy lần lượt giữa các bản clone" onChange={v => { setRejoinDirty(true); setRejoinDraft(p => ({ ...p, delayBetweenClonesSec: v })); }} />
+                  <SliderField label="Boot grace" unit="s" min={10} max={300} value={rejoinDraft.bootGraceSec} hint="Thời gian chờ clone tải game và mở cửa sổ sau khi khởi chạy" onChange={v => { setRejoinDirty(true); setRejoinDraft(p => ({ ...p, bootGraceSec: v })); }} />
+                  <SliderField label="Window grace" unit="s" min={10} max={300} value={rejoinDraft.windowGraceSec} hint="Mất cửa sổ quá lâu sẽ tính là crash; bỏ qua khi dump lỗi không đọc được" onChange={v => { setRejoinDirty(true); setRejoinDraft(p => ({ ...p, windowGraceSec: v })); }} />
+                  <SliderField label="Disconnect confirm" unit="s" min={2} max={60} value={rejoinDraft.disconnectConfirmSec} hint="Màn hình mất kết nối phải giữ đủ thời gian này mới rejoin" onChange={v => { setRejoinDirty(true); setRejoinDraft(p => ({ ...p, disconnectConfirmSec: v })); }} />
+                  <SliderField label="Network UDP timeout" unit="s" min={0} max={300} value={rejoinDraft.networkTimeoutSec} zeroLabel="Tắt" hint="Kiểm tra socket UDP theo UID (thay thế heartbeat; 0 = tắt)" onChange={v => { setRejoinDirty(true); setRejoinDraft(p => ({ ...p, networkTimeoutSec: v })); }} />
+                  <SliderField label="Max rejoin interval" unit="s" min={30} max={900} value={rejoinDraft.maxRejoinIntervalSec} hint="Khoảng nghỉ tối đa giữa hai lần thử lại" onChange={v => { setRejoinDirty(true); setRejoinDraft(p => ({ ...p, maxRejoinIntervalSec: v })); }} />
+                  <SliderField label="Retry attempts" unit="lần" min={0} max={50} value={rejoinDraft.retryAttempts} zeroLabel="Không giới hạn" hint="0 = thử lại không giới hạn khi mất kết nối/crash" onChange={v => { setRejoinDirty(true); setRejoinDraft(p => ({ ...p, retryAttempts: v })); }} />
+                  <SliderField label="Backoff" unit="s" min={5} max={120} value={rejoinDraft.backoffSec} hint="Thời gian nghỉ cơ bản, nhân đôi sau mỗi lần lỗi liên tiếp" onChange={v => { setRejoinDirty(true); setRejoinDraft(p => ({ ...p, backoffSec: v })); }} />
+                </div>
+
+                <div className="rejoin-toggles">
+                  <div className="rejoin-toggle-box">
+                    <div className="watch-heading">
+                      <div>
+                        <h4>Teleport detection</h4>
+                        <p>Bỏ qua ngắt kết nối ngắn ngay sau khi người chơi chuyển server.</p>
+                      </div>
+                      <button type="button" role="switch" aria-checked={rejoinDraft.teleportDetection} className={`switch ${rejoinDraft.teleportDetection ? "on" : ""}`} onClick={() => { setRejoinDirty(true); setRejoinDraft(p => ({ ...p, teleportDetection: !p.teleportDetection })); }}><span /></button>
+                    </div>
+                    {rejoinDraft.teleportDetection && (
+                      <SliderField label="Grace period" unit="s" min={10} max={300} value={rejoinDraft.teleportGraceSec} hint="Thời gian miễn kiểm tra disconnect sau khi chuyển server" onChange={v => { setRejoinDirty(true); setRejoinDraft(p => ({ ...p, teleportGraceSec: v })); }} />
+                    )}
+                  </div>
+
+                  <div className="rejoin-toggle-box">
+                    <div className="watch-heading">
+                      <div>
+                        <h4>Rejoin on crash (4 lớp kiểm tra)</h4>
+                        <p>Phát hiện tiến trình chết hoặc cửa sổ game biến mất khi cả 4 lớp (task list, window manager, surfaces, screen tree) đồng thuận.</p>
+                      </div>
+                      <button type="button" role="switch" aria-checked={rejoinDraft.rejoinOnCrash} className={`switch ${rejoinDraft.rejoinOnCrash ? "on" : ""}`} onClick={() => { setRejoinDirty(true); setRejoinDraft(p => ({ ...p, rejoinOnCrash: !p.rejoinOnCrash })); }}><span /></button>
+                    </div>
+                  </div>
+
+                  <div className="rejoin-toggle-box">
+                    <div className="watch-heading">
+                      <div>
+                        <h4>Phát hiện màn hình Disconnect & CAPTCHA</h4>
+                        <p>Quét cây UI để rejoin khi hiện Disconnected/Error Code; tự tạm dừng khi gặp màn hình đăng nhập hoặc CAPTCHA.</p>
+                      </div>
+                      <button type="button" role="switch" aria-checked={rejoinDraft.detectDisconnectUi} className={`switch ${rejoinDraft.detectDisconnectUi ? "on" : ""}`} onClick={() => { setRejoinDirty(true); setRejoinDraft(p => ({ ...p, detectDisconnectUi: !p.detectDisconnectUi })); }}><span /></button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rejoin-actions">
+                  <button type="button" className="secondary" onClick={() => { setRejoinDraft(current.telemetry?.rejoinConfig ?? DEFAULT_REJOIN_CONFIG); setRejoinDirty(false); }}>Hoàn tác</button>
+                  <button type="submit" className="primary" disabled={blocked}>
+                    <Check size={16} /> Lưu cấu hình Auto-rejoin
+                  </button>
+                </div>
+              </form> : <div className="command-list">
                 {results.length ? results.map(result => <CommandRow key={result.id} result={result} />) : <div className="inline-empty">Chưa có lệnh nào được gửi đến máy.</div>}
               </div>}
             </div>
@@ -378,6 +498,11 @@ export default function Dashboard() {
                   <label>Số hàng<select value={rows} onChange={e => setRows(Number(e.target.value))}>{[1, 2, 3, 4].map(n => <option key={n}>{n}</option>)}</select></label>
                   <label>Số cột<select value={cols} onChange={e => setCols(Number(e.target.value))}>{[1, 2, 3, 4].map(n => <option key={n}>{n}</option>)}</select></label>
                 </div>
+                <div className="grid-presets">
+                  <button type="button" className="secondary compact" onClick={() => { setRows(2); setCols(2); }}>2×2 (4 acc)</button>
+                  <button type="button" className="secondary compact" onClick={() => { setRows(2); setCols(3); }}>2×3 (6 acc)</button>
+                  <button type="button" className="secondary compact" onClick={() => { setRows(3); setCols(2); }}>3×2 (6 acc)</button>
+                </div>
                 <button className="primary full" disabled={blocked || !profiles.length} onClick={() => issue({ action: "grid", rows, cols, gap: 6, top: 32, bottom: 36 })}>
                   <Grid2X2 size={16} /> Áp dụng lưới
                 </button>
@@ -389,14 +514,20 @@ export default function Dashboard() {
                 <div className="watch-heading">
                   <span className="watch-icon"><RefreshCw size={18} /></span>
                   <div>
-                    <h3>Tự mở lại toàn máy</h3>
-                    <p>{current.telemetry?.watch ? "Watchdog đang theo dõi" : "Watchdog đang tắt"}</p>
+                    <h3>Auto-rejoin loop</h3>
+                    <p>{current.telemetry?.watch ? "Watchdog đa lớp đang bật" : "Watchdog đang tắt"}</p>
                   </div>
                   <button role="switch" aria-checked={Boolean(current.telemetry?.watch)} aria-label="Tự mở lại Noka" className={`switch ${current.telemetry?.watch ? "on" : ""}`} disabled={blocked} onClick={() => issue({ action: "set_watch", enabled: !current.telemetry?.watch })}><span /></button>
                 </div>
-                <p className="muted">Khi bật: Tự mở lại các Noka có cờ “Tự mở lại”. Khi chủ động bấm Đóng một Noka từ dashboard, Noka đó sẽ tạm dừng tự mở lại.</p>
+                <p className="muted">Tự động kiểm tra crash 4 lớp & màn hình Disconnect, có giãn cách giữa các clone. Tạm dừng nếu gặp CAPTCHA.</p>
+                <button className="text-button full freeform-button" onClick={() => setTab("rejoin")}>
+                  <SlidersHorizontal size={14} /> Chỉnh tham số Auto-Rejoin
+                </button>
               </section>
 
+              <button className="secondary full" disabled={blocked || !profiles.length} onClick={() => issue({ action: "rejoin_all" })}>
+                <RotateCcw size={16} /> Rejoin tất cả vào Place ID
+              </button>
               <button className="secondary full" disabled={blocked} onClick={() => issue({ action: "open_all" })}>
                 <Layers3 size={16} /> Mở tất cả Noka đang bật
               </button>
@@ -455,13 +586,18 @@ export default function Dashboard() {
         }
         cookie = cookie.replace(/^["']|["']$/g, "").trim();
 
+        const placeId = String(fields.get("placeId") ?? "").replace(/\D/g, "").slice(0, 20);
+        const jobId = String(fields.get("jobId") ?? "").replace(/[^A-Za-z0-9-]/g, "").slice(0, 64);
+
         const profileUpdate: Profile = {
           package: editing.package,
           label: String(fields.get("label")).trim(),
           username: username,
           slot: Number(fields.get("slot")),
           enabled: fields.get("enabled") === "on",
-          autoReopen: fields.get("autoReopen") === "on"
+          autoReopen: fields.get("autoReopen") === "on",
+          placeId,
+          jobId
         };
 
         try {
@@ -493,6 +629,10 @@ export default function Dashboard() {
         <label className="checkbox-label" style={{ marginTop: 8 }}>
           <input type="checkbox" name="autoReopen" defaultChecked={editing.autoReopen !== false} /> Cho phép Watchdog tự mở lại khi ứng dụng bị tắt
         </label>
+
+        <div className="section-subhead">Server riêng cho bản này (tùy chọn)</div>
+        <label>Place ID riêng<input name="placeId" defaultValue={editing.placeId ?? ""} maxLength={20} placeholder="Để trống để dùng Place ID chung" /></label>
+        <label>Job ID riêng<input name="jobId" defaultValue={editing.jobId ?? ""} maxLength={64} placeholder="Để trống để vào server bất kỳ" /></label>
 
         <div className="section-subhead">Gán / Thay đổi tài khoản cho bản Noka này</div>
         <label>Tên tài khoản Roblox (Username)<input name="username" defaultValue={editing.username} maxLength={80} placeholder="Ví dụ: RobloxPlayer_01" /></label>
@@ -617,5 +757,20 @@ function CommandRow({ result }: { result: Result }) {
       <small>{new Date(result.createdAt).toLocaleString("vi-VN")}</small>
     </div>
     <span className={`result-status ${result.status}`}>{names[result.status]}</span>
+  </div>;
+}
+
+function SliderField({ label, unit, min, max, value, hint, zeroLabel, onChange }: {
+  label: string; unit: string; min: number; max: number; value: number;
+  hint: string; zeroLabel?: string; onChange: (next: number) => void;
+}) {
+  const shown = value === 0 && zeroLabel ? `0 (${zeroLabel})` : `${value}${unit}`;
+  return <div className="slider-field">
+    <div className="slider-top">
+      <span>{label}</span>
+      <b>{shown}</b>
+    </div>
+    <input type="range" min={min} max={max} value={value} onChange={e => onChange(Number(e.target.value))} />
+    <small>{hint}</small>
   </div>;
 }

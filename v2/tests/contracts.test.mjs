@@ -1,14 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { commandSchema, ownedBy, isOnline } from '../lib/contracts.ts';
+import { commandSchema, DEFAULT_REJOIN_CONFIG, ownedBy, isOnline } from '../lib/contracts.ts';
 
 test('accepts supported grid command', () => {
   assert.equal(commandSchema.parse({ action: 'grid', rows: 2, cols: 2, gap: 6, top: 32, bottom: 36 }).cols, 2);
 });
+test('accepts rejoin config, rejoin commands, and global roblox / 6 clones', () => {
+  assert.equal(commandSchema.parse({ action: 'set_rejoin_config', config: { ...DEFAULT_REJOIN_CONFIG, placeId: '1730877806' } }).config.placeId, '1730877806');
+  assert.equal(commandSchema.parse({ action: 'rejoin', package: 'com.roblox.client' }).package, 'com.roblox.client');
+  assert.equal(commandSchema.parse({ action: 'open', package: 'free.nokaF' }).package, 'free.nokaF');
+  assert.equal(commandSchema.parse({ action: 'rejoin_all' }).action, 'rejoin_all');
+});
 test('cannot submit remote shell or an arbitrary app package', () => {
   for (const command of [{action:'shell',command:'id'}, {action:'open',package:'com.android.settings'},
     {action:'close',package:'free.nokaA;id'}, {action:'grid',rows:0,cols:2,gap:6,top:0,bottom:0},
-    {action:'set_watch',enabled:'true'}, {action:'scan',extra:'unknown'}]) {
+    {action:'set_watch',enabled:'true'}, {action:'scan',extra:'unknown'},
+    {action:'set_rejoin_config',config:{...DEFAULT_REJOIN_CONFIG,placeId:'abc'}},
+    {action:'set_rejoin_config',config:{...DEFAULT_REJOIN_CONFIG,checkIntervalSec:1}}]) {
     assert.equal(commandSchema.safeParse(command).success, false);
   }
 });
