@@ -38,10 +38,12 @@ jobs:
         working-directory: android
         run: |
           set -o pipefail
-          if ! gradle testDebugUnitTest assembleDebug --no-daemon --console=plain 2>&1 | tee gradle.log; then
-            tail -n 60 gradle.log | while IFS= read -r line; do echo "::error::$line"; done
+          if ! gradle testDebugUnitTest assembleDebug --no-daemon --console=plain > gradle.log 2>&1; then
+            cat gradle.log
+            (grep -A 6 -E "^e:|FAILURE:|What went wrong:" gradle.log || tail -n 10 gradle.log) | head -n 8 | while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           fi
+          cat gradle.log
 
       - name: Upload Rejoin Control APK
         uses: actions/upload-artifact@v4
