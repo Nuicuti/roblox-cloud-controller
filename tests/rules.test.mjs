@@ -74,6 +74,8 @@ test('rejoin config and global roblox packages pass rules while invalid bounds f
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/min1'), { ...baseCmd, id: 'min1', action: 'minimize_all' }));
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/ret1'), { ...baseCmd, id: 'ret1', action: 'retile' }));
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/cls1'), { ...baseCmd, id: 'cls1', action: 'close_all' }));
+  await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/rem1'), { ...baseCmd, id: 'rem1', action: 'remove_profile', package: 'premium.nokaF' }));
+  await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/rst1'), { ...baseCmd, id: 'rst1', action: 'restore_profiles' }));
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/rej1'), { ...baseCmd, id: 'rej1', action: 'rejoin', package: 'com.roblox.client' }));
   await assertFails(set(ref(db, base + '/devices/deviceA/inbox/bad1'), { ...baseCmd, id: 'bad1', action: 'rejoin', package: 'com.android.settings' }));
   await assertFails(set(ref(db, base + '/devices/deviceA/inbox/bad2'), { ...baseCmd, id: 'bad2', action: 'set_rejoin_config', config: { ...config, checkIntervalSec: 1 } }));

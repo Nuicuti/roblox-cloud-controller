@@ -530,4 +530,36 @@ class WatchdogEngineTest {
         assertEquals(234, rssMap["premium.nokaA"])
         assertEquals(1738, rssMap["premium.nokaF"])
     }
+
+    @Test
+    fun `remove_profile closes tab, excludes from scan, compacts grid, and restore_profiles brings it back`() {
+        val dir = tempFolder.newFolder("remove-restore")
+        val crypto = CryptoStore(dir)
+        val fa = FakeAndroid()
+        val engine = WatchdogEngine(storageDir = dir, android = fa, crypto = crypto)
+        engine.scan()
+        val initialCount = engine.profiles.size
+        assertTrue(initialCount >= 6)
+        engine.grid = GridSettings(rows = 2, cols = 3, gap = 4, top = 18, bottom = 48)
+
+        val rmMsg = engine.execute(JSONObject().put("action", "remove_profile").put("package", "free.nokaE"))
+        assertTrue(rmMsg.contains("Đã đóng và xóa"))
+        assertTrue(fa.closed.contains("free.nokaE"))
+        assertFalse("free.nokaE" in engine.profiles)
+        assertTrue("free.nokaE" in engine.excludedPackages)
+
+        engine.execute(JSONObject().put("action", "remove_profile").put("package", "free.nokaF"))
+        assertEquals(initialCount - 2, engine.profiles.size)
+
+        // Persist and reload; scan must NOT revive removed packages automatically.
+        val reloaded = WatchdogEngine(storageDir = dir, android = fa, crypto = crypto)
+        reloaded.scan()
+        assertFalse("free.nokaE" in reloaded.profiles)
+        assertFalse("free.nokaF" in reloaded.profiles)
+
+        val rstMsg = reloaded.execute(JSONObject().put("action", "restore_profiles"))
+        assertTrue(rstMsg.contains("Đã khôi phục"))
+        assertTrue("free.nokaE" in reloaded.profiles)
+        assertTrue("free.nokaF" in reloaded.profiles)
+    }
 }

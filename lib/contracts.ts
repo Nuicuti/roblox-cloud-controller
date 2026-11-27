@@ -52,6 +52,8 @@ export const commandSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("open"), package: packageSchema }).strict(),
   z.object({ action: z.literal("close"), package: packageSchema }).strict(),
   z.object({ action: z.literal("rejoin"), package: packageSchema }).strict(),
+  z.object({ action: z.literal("remove_profile"), package: packageSchema }).strict(),
+  z.object({ action: z.literal("restore_profiles") }).strict(),
   z.object({ action: z.literal("fullscreen"), package: packageSchema }).strict(),
   z.object({ action: z.literal("minimize_all") }).strict(),
   z.object({ action: z.literal("retile") }).strict(),
@@ -132,6 +134,7 @@ export type Device = {
     appVersion?: string;
     buildCode?: number;
     watch: boolean;
+    excludedCount?: number;
     accessibilityEnabled?: boolean;
     memory?: {
       totalMb: number;

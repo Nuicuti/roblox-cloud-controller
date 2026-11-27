@@ -67,6 +67,8 @@ const actionNames: Record<string, string> = {
   open: "Mở ứng dụng",
   close: "Đóng ứng dụng",
   rejoin: "Rejoin vào game",
+  remove_profile: "Xóa tab khỏi danh sách",
+  restore_profiles: "Khôi phục tab đã xóa",
   fullscreen: "Phóng to toàn màn hình",
   minimize_all: "Tab ra màn hình chính",
   retile: "Về lưới (giữ game)",
@@ -297,6 +299,18 @@ export default function Dashboard() {
         setRejoinDirty(false);
       }
       await send({ action: "rejoin_all" });
+    } catch {}
+  }
+
+  async function trimToFourTabs() {
+    if (blocked || profiles.length <= 4) return;
+    const extras = [...profiles].sort((a, b) => a.slot - b.slot).slice(4);
+    try {
+      for (const extra of extras) {
+        await send({ action: "remove_profile", package: extra.package });
+      }
+      setRows(2);
+      setCols(2);
     } catch {}
   }
 
@@ -810,21 +824,44 @@ export default function Dashboard() {
 
                   {tab === "accounts" ? (
                     <>
-                      <div className="panel-toolbar">
+                      <div className="panel-toolbar" style={{ flexWrap: "wrap", gap: 10 }}>
                         <div>
                           <h3>Danh sách bản clone trên máy</h3>
                           <p>Mỗi bản clone có cấu hình tài khoản, vị trí ô và trạng thái watchdog riêng biệt.</p>
                         </div>
-                        <button
-                          className="secondary compact"
-                          disabled={blocked || !profiles.length || !current.telemetry?.publicKey}
-                          onClick={() => {
-                            setBatchInput("");
-                            setCredentials(true);
-                          }}
-                        >
-                          <Plus size={15} /> Nhập hàng loạt tài khoản
-                        </button>
+                        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+                          {profiles.length > 4 && (
+                            <button
+                              className="secondary compact"
+                              style={{ color: "#f2cb73", borderColor: "#f2cb7344" }}
+                              disabled={blocked}
+                              onClick={() => void trimToFourTabs()}
+                              title="Tắt hẳn và xóa 2 tab cuối để chạy 4 tab lưới 2×2 nhẹ RAM hơn"
+                            >
+                              <Trash2 size={14} /> Bỏ bớt còn 4 tab (2×2)
+                            </button>
+                          )}
+                          {(current.telemetry?.excludedCount ?? 0) > 0 && (
+                            <button
+                              className="text-button"
+                              disabled={blocked}
+                              onClick={() => issue({ action: "restore_profiles" })}
+                              title="Quét và hiện lại các tab đã xóa trước đó"
+                            >
+                              Khôi phục {current.telemetry?.excludedCount} tab đã xóa
+                            </button>
+                          )}
+                          <button
+                            className="secondary compact"
+                            disabled={blocked || !profiles.length || !current.telemetry?.publicKey}
+                            onClick={() => {
+                              setBatchInput("");
+                              setCredentials(true);
+                            }}
+                          >
+                            <Plus size={15} /> Nhập hàng loạt tài khoản
+                          </button>
+                        </div>
                       </div>
 
                       <div className="account-list">
@@ -950,6 +987,15 @@ export default function Dashboard() {
                                 >
                                   {profile.running ? <Square size={13} /> : <ArrowRight size={15} />}
                                   {profile.running ? "Tắt" : "Mở"}
+                                </button>
+                                <button
+                                  className="row-action"
+                                  style={{ color: "#f29494", borderColor: "#f2949433" }}
+                                  disabled={blocked}
+                                  onClick={() => issue({ action: "remove_profile", package: profile.package })}
+                                  title="Tắt hẳn và xóa tab này khỏi danh sách quản lý (giảm RAM/chống crash)"
+                                >
+                                  <Trash2 size={13} /> Xóa
                                 </button>
                               </div>
                             </div>

@@ -36,6 +36,7 @@ class WatchdogEngine(
     private val journalFile = File(storageDir, "journal.json")
 
     val profiles = linkedMapOf<String, CloneProfile>()
+    val excludedPackages = linkedSetOf<String>()
     val accounts = linkedMapOf<String, AccountRecord>()
     val journal = linkedMapOf<String, JSONObject>()
     val health = linkedMapOf<String, HealthTracker>()
@@ -64,6 +65,9 @@ class WatchdogEngine(
             watch = obj.optBoolean("watch", false)
             rejoinConfig = RejoinConfig.fromJsonLenient(obj.optJSONObject("rejoinConfig"), watch)
             grid = GridSettings.fromJson(obj.optJSONObject("grid"))
+            obj.optString("excluded", "").split(',').map { it.trim() }.filter { it.isNotEmpty() }.forEach {
+                excludedPackages.add(it)
+            }
             obj.optJSONObject("windowBackup")?.let { wb ->
                 windowBackup = wb.keys().asSequence().associateWith { wb.getString(it) }
             }
@@ -82,6 +86,9 @@ class WatchdogEngine(
             put("watch", watch)
             put("rejoinConfig", rejoinConfig.toJson())
             grid?.let { put("grid", it.toJson()) }
+            if (excludedPackages.isNotEmpty()) {
+                put("excluded", excludedPackages.joinToString(","))
+            }
             windowBackup?.let { wb ->
                 put("windowBackup", JSONObject().apply { wb.forEach { (k, v) -> put(k, v) } })
             }
@@ -189,7 +196,7 @@ class WatchdogEngine(
         val knownSlots = mapOf("free.nokaA" to 3, "free.nokaB" to 4, "free.nokaC" to 1, "free.nokaD" to 2)
         val occupied = profiles.values.map { it.slot }.toMutableSet()
         for (pkg in installed) {
-            if (pkg in profiles) continue
+            if (pkg in profiles || pkg in excludedPackages) continue
             val desired = knownSlots[pkg]
             val slot = if (desired != null && desired !in occupied) desired else (1..99).first { it !in occupied }
             if (slot > 36) continue
@@ -216,6 +223,27 @@ class WatchdogEngine(
             }
         }
         return "Phát hiện ${installed.size} bản clone. Cấu hình cũ được giữ nguyên."
+    }
+
+    private fun compactGridAndSlots() {
+        val ordered = profiles.values.sortedBy { it.slot }
+        ordered.forEachIndexed { idx, p -> p.slot = idx + 1 }
+        val cur = grid ?: return
+        if (profiles.isEmpty()) {
+            grid = null
+            return
+        }
+        val activeCount = maxOf(profiles.values.count { it.enabled }, profiles.size, 1)
+        val (w, h) = android.displaySize()
+        val (sr, sc) = AndroidInspector.suggestGridShape(activeCount, w, h)
+        if (sr != cur.rows || sc != cur.cols) {
+            val nextGrid = cur.copy(rows = sr, cols = sc)
+            grid = nextGrid
+            try {
+                layout(nextGrid, launch = false)
+            } catch (_: Exception) {
+            }
+        }
     }
 
     private fun requireProfile(pkg: String): CloneProfile {
@@ -411,6 +439,26 @@ class WatchdogEngine(
                 p.autoReopen = true
                 openProfile(pkg, forceStop = true, nowMs = nowMs)
                 "Đã rejoin ${p.label}."
+            }
+            "remove_profile" -> {
+                val pkg = command.getString("package")
+                val p = requireProfile(pkg)
+                launchQueue.removeAll { it.packageName == pkg }
+                health.remove(pkg)
+                android.close(pkg)
+                profiles.remove(pkg)
+                excludedPackages.add(pkg)
+                compactGridAndSlots()
+                saveState()
+                "Đã đóng và xóa ${p.label} khỏi danh sách (${profiles.size} tab còn lại)."
+            }
+            "restore_profiles" -> {
+                val prevExcluded = excludedPackages.size
+                excludedPackages.clear()
+                val scanMsg = scan()
+                compactGridAndSlots()
+                saveState()
+                "Đã khôi phục $prevExcluded tab đã xóa. $scanMsg"
             }
             "fullscreen" -> {
                 val pkg = command.getString("package")
@@ -929,6 +977,7 @@ class WatchdogEngine(
             put("appVersion", appVer)
             put("buildCode", buildCode)
             put("watch", watch)
+            put("excludedCount", excludedPackages.size)
             put("accessibilityEnabled", android.isAccessibilityEnabled())
             memInfo?.let { put("memory", it.toJson()) }
             put("rejoinConfig", effectiveConfig().toJson())

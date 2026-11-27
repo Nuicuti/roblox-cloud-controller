@@ -25,6 +25,8 @@ test('accepts rejoin config, rejoin commands, and global roblox / 6 clones', () 
   assert.equal(commandSchema.parse({ action: 'minimize_all' }).action, 'minimize_all');
   assert.equal(commandSchema.parse({ action: 'retile' }).action, 'retile');
   assert.equal(commandSchema.parse({ action: 'close_all' }).action, 'close_all');
+  assert.equal(commandSchema.parse({ action: 'remove_profile', package: 'premium.nokaF' }).action, 'remove_profile');
+  assert.equal(commandSchema.parse({ action: 'restore_profiles' }).action, 'restore_profiles');
   assert.equal(commandSchema.parse({ action: 'self_update' }).action, 'self_update');
 });
 
