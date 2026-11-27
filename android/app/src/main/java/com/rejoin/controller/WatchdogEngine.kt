@@ -944,17 +944,18 @@ class WatchdogEngine(
                 launchQueue.removeFirst()
                 val p = profiles[item.packageName]
                 if (p != null) {
+                    val launchMsg = "Đang khởi chạy vào game."
                     p.enabled = true
                     p.error = null
                     p.healthState = "booting"
-                    p.healthMessage = "Đang khởi chạy vào game."
+                    p.healthMessage = launchMsg
                     val (placeId, jobId) = effectiveTarget(p, cfg)
                     h.lastLaunchMs = nowMs
                     lastAnyLaunchMs = nowMs
                     lastAnyLaunchPkg = item.packageName
                     p.lastRejoinAt = System.currentTimeMillis()
                     saveState()
-                    return DeferredLaunch(item.packageName, placeId, jobId, item.forceStop, p.healthMessage, epoch, fromQueue = true)
+                    return DeferredLaunch(item.packageName, placeId, jobId, item.forceStop, launchMsg, epoch, fromQueue = true)
                 }
                 return null
             }
