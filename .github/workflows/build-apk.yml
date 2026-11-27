@@ -10,8 +10,10 @@ on:
 
 jobs:
   build-apk:
-    name: Build Debug APK & Run Unit Tests
+    name: Build Debug APK & Publish Release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout Repository
@@ -44,10 +46,22 @@ jobs:
             exit 1
           fi
           cat gradle.log
+          cp app/build/outputs/apk/debug/app-debug.apk ../rejoin-control.apk
 
-      - name: Upload Rejoin Control APK
+      - name: Upload Rejoin Control APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: rejoin-control-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: rejoin-control.apk
           if-no-files-found: error
+
+      - name: Publish Direct APK Download Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Rejoin Control APK (Latest)
+          files: rejoin-control.apk
+          make_latest: true
+          body: "Tải trực tiếp `rejoin-control.apk` để cài trên Redfinger (thay thế hoàn toàn Termux)."
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

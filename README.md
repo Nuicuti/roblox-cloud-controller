@@ -12,8 +12,9 @@ Hệ thống điều khiển từ xa cho 4–6+ clone trên Android root (Redfin
 
 ## Cài đặt nhanh bằng APK (thay thế Termux)
 
-1. Mở tab **Actions** trên GitHub repo → chọn workflow **Build Android Rejoin APK** mới nhất → tải artifact `rejoin-control-apk` và giải nén lấy `app-debug.apk`.
-2. Cài `app-debug.apk` lên máy Redfinger, mở app **Rejoin Control**:
+1. Tải trực tiếp file cài đặt trên Redfinger:
+   `https://github.com/Nuicuti/roblox-cloud-controller/releases/latest/download/rejoin-control.apk`
+2. Cài `rejoin-control.apk` lên máy Redfinger, mở app **Rejoin Control**:
    - Bấm **Tạo mã ghép máy** và cấp quyền **Root (SuperUser)** khi được hỏi.
    - Bấm **Bật dịch vụ chạy ngầm** (nên bấm thêm **Mở cài đặt Accessibility** và **Tắt tối ưu pin** để đọc màn hình nhanh và không bị tắt ngầm).
 3. Ghép UID + mã 32 hex vào Web Dashboard, sau đó cấu hình tab **Auto-Rejoin Loop** và lưới cửa sổ.

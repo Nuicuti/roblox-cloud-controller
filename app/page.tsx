@@ -1155,8 +1155,16 @@ export default function Dashboard() {
       {pair && (
         <Modal title="Ghép máy Redfinger mới" onClose={() => setPair(false)}>
           <p className="muted">
-            Mở app <b>Rejoin Control (.apk)</b> trên Redfinger (hoặc chạy <code>python ~/noka-controller/agent.py setup</code>{" "}
-            nếu dùng Termux) để lấy UID máy và Mã ghép 10 phút.
+            Tải và cài{" "}
+            <a
+              href="https://github.com/Nuicuti/roblox-cloud-controller/releases/latest/download/rejoin-control.apk"
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: "#b6f273", textDecoration: "underline" }}
+            >
+              rejoin-control.apk
+            </a>{" "}
+            trên Redfinger, mở app và bấm <b>Tạo mã ghép máy</b> để lấy UID + Mã ghép 10 phút.
           </p>
           <form
             onSubmit={async event => {
