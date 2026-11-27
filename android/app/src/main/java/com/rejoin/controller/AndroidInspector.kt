@@ -590,6 +590,7 @@ interface AndroidDevice {
     fun collectDiagnostics(pkgs: Collection<String>): JSONObject? = null
     fun refreshDiagnostics(pkgs: Collection<String>): JSONObject? = null
     fun resetAppClonerWindows(pkgs: Collection<String>) {}
+    fun focusPackage(pkg: String) {}
     fun freeformSupported(): Boolean
     fun open(pkg: String, freeform: Boolean = false, placeId: String = "", jobId: String = "")
     fun close(pkg: String)
@@ -936,6 +937,19 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
 
     override fun close(pkg: String) {
         RootShell.run(listOf("/system/bin/am", "force-stop", "--user", "0", pkg), check = false, timeoutSec = 10)
+    }
+
+    override fun focusPackage(pkg: String) {
+        val placement = inspectPlacement(pkg) ?: return
+        val res = runWindowHelper("focus", placement.taskId.toString())
+        if (res.exitCode != 0) {
+            val b = windowFrame(pkg)?.frame ?: placement.bounds
+            if (b != null && b.right > b.left + 40 && b.bottom > b.top + 60) {
+                val tx = (b.left + 20).coerceAtLeast(1)
+                val ty = (b.top + 48).coerceAtMost(b.bottom - 10)
+                RootShell.run(listOf("/system/bin/input", "tap", tx.toString(), ty.toString()), check = false, timeoutSec = 4)
+            }
+        }
     }
 
     private fun syncAppClonerWindowPrefs(

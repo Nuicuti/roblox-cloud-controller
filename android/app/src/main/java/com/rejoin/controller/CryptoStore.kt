@@ -86,7 +86,12 @@ class CryptoStore(private val storageDir: File) {
             val user = item.getString("username")
             val pass = item.getString("password")
             val cookie = item.getString("cookie")
-            if (!ConfigLimits.isAllowedPackage(pkg) || user.length !in 1..80 || cookie.length !in 1..20000 || pass.length > 200) {
+            if (!ConfigLimits.isAllowedPackage(pkg) ||
+                user.length !in 1..80 ||
+                cookie.length > 20000 ||
+                pass.length > 200 ||
+                (cookie.isEmpty() && pass.isEmpty())
+            ) {
                 throw AgentException("Thông tin tài khoản ngoài giới hạn cho phép.")
             }
             list.add(AccountRecord(pkg, user, pass, cookie))

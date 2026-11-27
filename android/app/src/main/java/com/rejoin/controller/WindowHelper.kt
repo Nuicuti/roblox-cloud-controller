@@ -66,6 +66,12 @@ object WindowHelper {
                     println("${if (ok) "OK" else "FAIL"}: svc=$svcName $log")
                     if (!ok) kotlin.system.exitProcess(3)
                 }
+                "focus" -> {
+                    val taskId = args.getOrNull(1)?.toIntOrNull() ?: error("invalid taskId")
+                    val ok = focusTask(svc, taskId, log)
+                    println("${if (ok) "OK" else "FAIL"}: svc=$svcName $log")
+                    if (!ok) kotlin.system.exitProcess(3)
+                }
                 else -> error("unknown command: ${args[0]}")
             }
         } catch (t: Throwable) {
@@ -212,6 +218,31 @@ object WindowHelper {
             } catch (t: Throwable) {
                 val root = t.cause ?: t
                 log.append("resizeStack(${p.size})=${root.javaClass.simpleName}:${root.message}; ")
+            }
+        }
+        return false
+    }
+
+    private fun focusTask(svc: Any, taskId: Int, log: StringBuilder): Boolean {
+        for (methodName in listOf("setFocusedTask", "moveTaskToFront")) {
+            for (m in svc.javaClass.methods.filter { it.name == methodName }.sortedBy { it.parameterCount }) {
+                val p = m.parameterTypes
+                val args: Array<Any?>? = when {
+                    methodName == "setFocusedTask" && p.size == 1 && p[0] == Int::class.javaPrimitiveType ->
+                        arrayOf(taskId)
+                    methodName == "moveTaskToFront" && p.size == 2 && p[0] == Int::class.javaPrimitiveType && p[1] == Int::class.javaPrimitiveType ->
+                        arrayOf(taskId, 0)
+                    else -> null
+                }
+                if (args == null) continue
+                try {
+                    m.invoke(svc, *args)
+                    log.append("$methodName=ok; ")
+                    return true
+                } catch (t: Throwable) {
+                    val root = t.cause ?: t
+                    log.append("$methodName=${root.javaClass.simpleName}:${root.message}; ")
+                }
             }
         }
         return false

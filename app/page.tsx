@@ -69,6 +69,8 @@ const actionNames: Record<string, string> = {
   status: "Cập nhật trạng thái",
   set_accounts: "Gửi tài khoản E2EE",
   login_all: "Nạp cookie và mở",
+  fill_login: "Điền TK/MK đăng nhập",
+  fill_login_all: "Điền TK/MK đăng nhập tất cả",
   self_update: "Tự cập nhật APK",
 };
 
@@ -250,8 +252,19 @@ export default function Dashboard() {
       .map((line, idx) => {
         const parts = line.split(":");
         const username = parts[0]?.trim() || "";
-        const password = parts.length >= 3 ? parts[1] : "";
-        let cookie = parts.length >= 3 ? parts.slice(2).join(":").trim() : parts.slice(1).join(":").trim();
+        let password = "";
+        let cookie = "";
+        if (parts.length >= 3) {
+          password = parts[1] ?? "";
+          cookie = parts.slice(2).join(":").trim();
+        } else if (parts.length === 2) {
+          const second = parts[1] ?? "";
+          if (second.includes("_|WARNING:") || second.trim().length > 80) {
+            cookie = second.trim();
+          } else {
+            password = second;
+          }
+        }
         if (cookie.startsWith(".ROBLOSECURITY=")) cookie = cookie.slice(".ROBLOSECURITY=".length).trim();
         cookie = cookie.replace(/^["']|["']$/g, "").trim();
         return { username, password, cookie, line, target: profiles[idx] };
@@ -696,10 +709,14 @@ export default function Dashboard() {
                                     <span className="status-pill green">Cookie: Hợp lệ</span>
                                   ) : profile.cookieStatus === "invalid" ? (
                                     <span className="status-pill red">Cookie: Lỗi/Hết hạn</span>
-                                  ) : profile.hasAccount ? (
+                                  ) : (profile.hasCookie ?? profile.hasAccount) ? (
                                     <span className="status-pill blue">Cookie: Đã lưu trên máy</span>
                                   ) : (
                                     <span className="status-pill gray">Cookie: Chưa có</span>
+                                  )}
+
+                                  {profile.hasPassword && (
+                                    <span className="status-pill blue">Mật khẩu: Đã lưu</span>
                                   )}
 
                                   {profile.sqliteStatus === "written" ? (
@@ -732,6 +749,18 @@ export default function Dashboard() {
 
                               <button className="text-button" disabled={blocked} onClick={() => setEditing(profile)}>
                                 Sửa
+                              </button>
+                              <button
+                                className="row-action"
+                                disabled={blocked || !profile.hasPassword}
+                                onClick={() => issue({ action: "fill_login", package: profile.package })}
+                                title={
+                                  profile.hasPassword
+                                    ? "Tự bấm Đăng nhập và điền tài khoản/mật khẩu"
+                                    : "Chưa lưu mật khẩu cho bản này"
+                                }
+                              >
+                                <ShieldCheck size={13} /> Điền ĐN
                               </button>
                               <button
                                 className="row-action"
@@ -1222,7 +1251,15 @@ export default function Dashboard() {
                   </button>
                   <button
                     className="secondary full"
-                    disabled={blocked || !profiles.some(p => p.hasAccount)}
+                    disabled={blocked || !profiles.some(p => p.hasPassword)}
+                    onClick={() => issue({ action: "fill_login_all" })}
+                    title="Tự bấm Đăng nhập và điền tài khoản/mật khẩu cho các bản đang bật (tạm dừng nếu gặp CAPTCHA)"
+                  >
+                    <ShieldCheck size={16} /> Điền TK & MK đăng nhập
+                  </button>
+                  <button
+                    className="secondary full"
+                    disabled={blocked || !profiles.some(p => p.hasCookie ?? p.hasAccount)}
                     onClick={() => issue({ action: "login_all" })}
                   >
                     <ShieldCheck size={16} /> Nạp cookie và mở
@@ -1335,8 +1372,8 @@ export default function Dashboard() {
 
               try {
                 await send({ action: "profile", profile: profileUpdate });
-                if (cookie) {
-                  if (!username) throw new Error("Cần nhập tên tài khoản Roblox khi thay đổi cookie.");
+                if (cookie || password) {
+                  if (!username) throw new Error("Cần nhập tên tài khoản Roblox khi lưu mật khẩu hoặc cookie.");
                   if (!current?.telemetry?.publicKey) throw new Error("Máy chưa gửi khóa mã hóa public key.");
                   const sealed = await sealAccounts(current.telemetry.publicKey, [
                     { package: editing.package, username, password, cookie },
@@ -1396,11 +1433,11 @@ export default function Dashboard() {
               <input name="username" defaultValue={editing.username} maxLength={80} placeholder="Ví dụ: RobloxPlayer_01" />
             </label>
             <label>
-              Mật khẩu (Tùy chọn)
-              <input name="password" type="password" placeholder="Để trống nếu chỉ dùng cookie" />
+              Mật khẩu (dùng để điền tự động hoặc kèm cookie)
+              <input name="password" type="password" placeholder="Nhập mật khẩu Roblox (tùy chọn)" />
             </label>
             <label>
-              Cookie (.ROBLOSECURITY - Điền để cập nhật mới)
+              Cookie (.ROBLOSECURITY - Điền nếu muốn nạp cookie)
               <textarea name="cookie" rows={3} placeholder="_|WARNING:-DO-NOT-SHARE-THIS..." />
             </label>
 
@@ -1415,7 +1452,8 @@ export default function Dashboard() {
       {credentials && (
         <Modal title="Nhập hàng loạt tài khoản" onClose={() => setCredentials(false)}>
           <p className="muted">
-            Định dạng mỗi dòng: <code>username:password:cookie</code> (hoặc <code>username::cookie</code>).
+            Mỗi dòng một bản: <code>username:password</code> hoặc <code>username:password:cookie</code> hoặc{" "}
+            <code>username::cookie</code>.
           </p>
 
           {profiles.length > 0 && (
@@ -1458,8 +1496,8 @@ export default function Dashboard() {
                   throw new Error(`Đã nhập ${parsed.length} dòng nhưng máy chỉ có ${profiles.length} clone.`);
                 }
                 const records = parsed.map((item, index) => {
-                  if (!item.username || !item.cookie) {
-                    throw new Error(`Dòng ${index + 1} thiếu tên tài khoản hoặc cookie.`);
+                  if (!item.username || (!item.cookie && !item.password)) {
+                    throw new Error(`Dòng ${index + 1} cần có username kèm mật khẩu hoặc cookie.`);
                   }
                   return {
                     package: profiles[index].package,
@@ -1492,7 +1530,7 @@ export default function Dashboard() {
                 spellCheck={false}
                 value={batchInput}
                 onChange={e => setBatchInput(e.target.value)}
-                placeholder={"player1:matkhau:_|WARNING:-DO-NOT-SHARE-THIS...\nplayer2::_|WARNING:-DO-NOT-SHARE-THIS..."}
+                placeholder={"player1:matkhau123\nplayer2:matkhau:_|WARNING:-DO-NOT-SHARE-THIS...\nplayer3::_|WARNING:-DO-NOT-SHARE-THIS..."}
               />
             </label>
 

@@ -29,6 +29,7 @@ class WatchdogEngine(
     },
     private val appVersionInfo: () -> Pair<Long, String> = { 1L to "2.0.0" },
     private val selfUpdater: (() -> Pair<String, (() -> Unit)?>)? = null,
+    private val loginFiller: ((AccountRecord) -> FillLoginResult)? = null,
 ) {
     private val stateFile = File(storageDir, "state.json")
     private val accountsFile = File(storageDir, "accounts.json")
@@ -101,7 +102,7 @@ class WatchdogEngine(
                     packageName = r.getString("package"),
                     username = r.getString("username"),
                     password = r.optString("password", ""),
-                    cookie = r.getString("cookie"),
+                    cookie = r.optString("cookie", ""),
                 )
             }
         } catch (_: Exception) {
@@ -322,8 +323,15 @@ class WatchdogEngine(
                 val records = crypto.decryptAccounts(command.getJSONObject("sealed"))
                 for (r in records) requireProfile(r.packageName)
                 for (r in records) {
-                    accounts[r.packageName] = r
-                    profiles.getValue(r.packageName).username = r.username
+                    val prev = accounts[r.packageName]
+                    val merged = AccountRecord(
+                        packageName = r.packageName,
+                        username = r.username.ifEmpty { prev?.username.orEmpty() },
+                        password = r.password.ifEmpty { prev?.password.orEmpty() },
+                        cookie = r.cookie.ifEmpty { prev?.cookie.orEmpty() },
+                    )
+                    accounts[r.packageName] = merged
+                    profiles.getValue(r.packageName).username = merged.username
                 }
                 saveAccounts()
                 saveState()
@@ -478,7 +486,7 @@ class WatchdogEngine(
                 var failed = false
                 for (p in profiles.values.sortedBy { it.slot }) {
                     val acc = accounts[p.packageName] ?: continue
-                    if (!p.enabled) continue
+                    if (!p.enabled || acc.cookie.isEmpty()) continue
                     try {
                         val res = cookieWriter(acc)
                         p.cookieStatus = res.cookieStatus
@@ -498,8 +506,35 @@ class WatchdogEngine(
                     }
                 }
                 saveState()
-                if (messages.isEmpty()) throw AgentException("Chưa có tài khoản trên các bản đang bật.")
+                if (messages.isEmpty()) throw AgentException("Chưa có cookie trên các bản đang bật. Nếu chỉ lưu mật khẩu hãy dùng Điền TK & MK đăng nhập.")
                 drainLaunchQueue(nowMs)
+                if (failed) throw AgentException(messages.joinToString("; "))
+                messages.joinToString("; ")
+            }
+            "fill_login" -> {
+                val pkg = command.getString("package")
+                runFillLogin(pkg, nowMs)
+            }
+            "fill_login_all" -> {
+                val targets = profiles.values.filter {
+                    val acc = accounts[it.packageName]
+                    it.enabled && acc != null && acc.username.isNotEmpty() && acc.password.isNotEmpty()
+                }.sortedBy { it.slot }
+                if (targets.isEmpty()) {
+                    throw AgentException("Chưa có bản đang bật nào được lưu đủ tài khoản và mật khẩu.")
+                }
+                val messages = mutableListOf<String>()
+                var failed = false
+                for (p in targets) {
+                    try {
+                        val msg = runFillLogin(p.packageName, nowMs)
+                        messages.add("${p.label}: $msg")
+                    } catch (e: Exception) {
+                        failed = true
+                        messages.add("${p.label}: ${e.message ?: "Chưa điền được"}")
+                    }
+                }
+                saveState()
                 if (failed) throw AgentException(messages.joinToString("; "))
                 messages.joinToString("; ")
             }
@@ -518,6 +553,45 @@ class WatchdogEngine(
             }
             else -> throw AgentException("Lệnh không được hỗ trợ.")
         }
+    }
+
+    private fun runFillLogin(pkg: String, nowMs: Long): String {
+        val p = requireProfile(pkg)
+        val acc = accounts[pkg] ?: throw AgentException("${p.label} chưa gán tài khoản.")
+        if (acc.username.isEmpty() || acc.password.isEmpty()) {
+            throw AgentException("${p.label} chưa có đủ tài khoản & mật khẩu.")
+        }
+        if (!android.running(pkg)) {
+            openProfile(pkg, forceStop = false, nowMs = nowMs)
+            Thread.sleep(3500)
+        }
+        val res = loginFiller?.invoke(acc) ?: LoginAutomator.fillCredentials(android, acc)
+        when (res.status) {
+            "auth_required" -> {
+                p.loginStatus = "manual_verification_required"
+                p.healthState = "auth_required"
+                p.healthMessage = res.message
+                p.loginMessage = res.message
+                p.error = null
+            }
+            "logged_in" -> {
+                p.loginStatus = "logged_in"
+                p.loginMessage = res.message
+                p.error = null
+            }
+            "submitted" -> {
+                p.loginStatus = "unverified_ingame"
+                p.loginMessage = res.message
+                p.error = null
+            }
+            else -> {
+                p.loginMessage = res.message
+                p.error = res.message
+                throw AgentException(res.message)
+            }
+        }
+        saveState()
+        return res.message
     }
 
     private fun canLaunch(pkg: String, h: HealthTracker, nowMs: Long, cfg: RejoinConfig): Boolean {
@@ -759,9 +833,12 @@ class WatchdogEngine(
         val profJson = JSONObject()
         for ((pkg, p) in profiles) {
             val isRunning = android.running(pkg)
+            val acc = accounts[pkg]
             val item = p.toStateJson().apply {
                 put("running", isRunning)
-                put("hasAccount", pkg in accounts)
+                put("hasAccount", acc != null)
+                put("hasPassword", acc?.password?.isNotEmpty() == true)
+                put("hasCookie", acc?.cookie?.isNotEmpty() == true)
                 put("appStatus", if (isRunning) "running" else "stopped")
                 if (!has("healthState")) put("healthState", if (isRunning) "running" else "stopped")
                 tasks[pkg]?.let { put("taskId", it) }

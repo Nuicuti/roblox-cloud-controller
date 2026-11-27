@@ -71,6 +71,8 @@ export const commandSchema = z.discriminatedUnion("action", [
     }).strict(),
   }).strict(),
   z.object({ action: z.literal("login_all") }).strict(),
+  z.object({ action: z.literal("fill_login"), package: packageSchema }).strict(),
+  z.object({ action: z.literal("fill_login_all") }).strict(),
   z.object({ action: z.literal("self_update") }).strict(),
 ]);
 
@@ -92,6 +94,8 @@ export type Profile = z.infer<typeof profileSchema> & {
   error?: string;
   taskId?: number;
   hasAccount?: boolean;
+  hasPassword?: boolean;
+  hasCookie?: boolean;
   loginMessage?: string;
   cookieStatus?: "valid" | "invalid" | "unverified";
   sqliteStatus?: "written" | "failed" | "none";

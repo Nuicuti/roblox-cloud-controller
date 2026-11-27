@@ -354,4 +354,89 @@ class WatchdogEngineTest {
         val parsed = AndroidInspector.parseAppClonerWindowBounds(updated)
         assertEquals(RectBounds(0, 0, 421, 320), parsed)
     }
+
+    @Test
+    fun `password only accounts decrypt cleanly and login screen analyzer identifies landing, form, and captcha`() {
+        val dir = tempFolder.newFolder("pwd-login")
+        val crypto = CryptoStore(dir)
+        val jwk = crypto.publicJwk()
+        val n = BigInteger(1, Base64.getUrlDecoder().decode(jwk.getString("n")))
+        val e = BigInteger(1, Base64.getUrlDecoder().decode(jwk.getString("e")))
+        val pubKey = KeyFactory.getInstance("RSA").generatePublic(RSAPublicKeySpec(n, e))
+        val aesKey = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
+        val iv = ByteArray(12).also { SecureRandom().nextBytes(it) }
+        val payload = JSONArray().put(
+            JSONObject()
+                .put("package", "free.nokaA")
+                .put("username", "player1")
+                .put("password", "Secret!123")
+                .put("cookie", ""),
+        ).toString().toByteArray()
+        val aesCipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
+            init(Cipher.ENCRYPT_MODE, aesKey, GCMParameterSpec(128, iv))
+        }
+        val wrapped = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding").apply {
+            init(Cipher.ENCRYPT_MODE, pubKey, OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT))
+        }.doFinal(aesKey.encoded)
+        val sealed = JSONObject()
+            .put("key", Base64.getEncoder().encodeToString(wrapped))
+            .put("iv", Base64.getEncoder().encodeToString(iv))
+            .put("data", Base64.getEncoder().encodeToString(aesCipher.doFinal(payload)))
+        val decoded = crypto.decryptAccounts(sealed)
+        assertEquals(1, decoded.size)
+        assertEquals("Secret!123", decoded[0].password)
+        assertEquals("", decoded[0].cookie)
+
+        val landingXml = """
+            <hierarchy>
+              <node package="premium.nokaA" class="android.widget.Button" text="Tạo Tài khoản" clickable="true" bounds="[40,140][380,190]" />
+              <node package="premium.nokaA" class="android.widget.Button" text="Đăng nhập" clickable="true" bounds="[40,200][380,250]" />
+            </hierarchy>
+        """.trimIndent()
+        val landing = LoginAutomator.analyzeScreen(LoginAutomator.parseUiNodes(landingXml, "premium.nokaA"))
+        assertEquals("Đăng nhập", landing.landingLoginButton?.text)
+        assertEquals(null, landing.usernameNode)
+
+        val formXml = """
+            <hierarchy>
+              <node package="premium.nokaA" class="android.widget.EditText" hint="Tên người dùng/Email/Điện thoại" clickable="true" bounds="[40,90][380,130]" />
+              <node package="premium.nokaA" class="android.widget.EditText" hint="Mật khẩu" password="true" clickable="true" bounds="[40,140][380,180]" />
+              <node package="premium.nokaA" class="android.widget.Button" text="Đăng nhập bằng thiết bị khác" clickable="true" bounds="[40,250][380,285]" />
+              <node package="premium.nokaA" class="android.widget.Button" text="Đăng nhập" clickable="true" bounds="[40,195][380,235]" />
+            </hierarchy>
+        """.trimIndent()
+        val form = LoginAutomator.analyzeScreen(LoginAutomator.parseUiNodes(formXml, "premium.nokaA"))
+        assertEquals(RectBounds(40, 90, 380, 130), form.usernameNode?.bounds)
+        assertEquals(RectBounds(40, 140, 380, 180), form.passwordNode?.bounds)
+        assertEquals("Đăng nhập", form.submitButton?.text)
+
+        val captchaXml = """
+            <hierarchy>
+              <node package="premium.nokaA" class="android.widget.TextView" text="Verify you are human" bounds="[40,100][380,150]" />
+            </hierarchy>
+        """.trimIndent()
+        val captcha = LoginAutomator.analyzeScreen(LoginAutomator.parseUiNodes(captchaXml, "premium.nokaA"))
+        assertTrue(captcha.authChallenge != null)
+
+        val fa = FakeAndroid()
+        val filledUsers = mutableListOf<String>()
+        val engine = WatchdogEngine(
+            storageDir = dir,
+            android = fa,
+            crypto = crypto,
+            loginFiller = { acc ->
+                filledUsers.add("${acc.packageName}:${acc.username}:${acc.password}")
+                FillLoginResult("submitted", "Đã điền tài khoản ${acc.username}, mật khẩu và bấm Đăng nhập.")
+            },
+        )
+        engine.scan()
+        engine.execute(JSONObject().put("action", "set_accounts").put("sealed", sealed))
+        val tele = engine.buildTelemetry(includeDiag = false).getJSONObject("profiles").getJSONObject(ConfigLimits.sha256Prefix16("free.nokaA"))
+        assertTrue(tele.getBoolean("hasPassword"))
+        assertFalse(tele.getBoolean("hasCookie"))
+        fa.runningMap["free.nokaA"] = true
+        val resMsg = engine.execute(JSONObject().put("action", "fill_login").put("package", "free.nokaA"))
+        assertTrue(resMsg.contains("player1"))
+        assertEquals(listOf("free.nokaA:player1:Secret!123"), filledUsers)
+    }
 }
