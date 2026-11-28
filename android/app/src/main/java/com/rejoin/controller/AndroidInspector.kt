@@ -1,6 +1,7 @@
 package com.rejoin.controller
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.graphics.Point
 import android.hardware.display.DisplayManager
 import android.os.Build
@@ -673,6 +674,19 @@ interface AndroidDevice {
     fun trimMemoryAndClearCache(pkgs: Collection<String>): String = ""
     fun applyClientSettings(pkgs: Collection<String>, fpsCap: Int, lowGraphics: Boolean): String = ""
     fun udpPeers(pkg: String): Set<UdpPeer>?
+    fun allUdpPeers(pkgs: Collection<String>): Map<String, Set<UdpPeer>> {
+        val out = linkedMapOf<String, Set<UdpPeer>>()
+        for (p in pkgs) udpPeers(p)?.let { out[p] = it }
+        return out
+    }
+    fun captureScreenRgba(): ScreenFrame? = null
+    fun findAccessibilityLeaveTap(pkg: String): Pair<Int, Int>? = null
+    fun detectLeaveTap(pkg: String, bounds: RectBounds?, screen: ScreenFrame?): Pair<Int, Int>? {
+        findAccessibilityLeaveTap(pkg)?.let { return it }
+        val match = LeaveModalDetector.detectLeaveButton(screen, bounds)
+        return match?.let { it.tapX to it.tapY }
+    }
+    fun tapScreen(x: Int, y: Int) {}
     fun windowChecks(pkg: String, uiXml: String?, tasksText: String?, windowsText: String?, surfaceText: String?): WindowChecks
     fun displaySize(): Pair<Int, Int>
     fun systemBarInsets(): Pair<Int, Int> = 24 to 44
@@ -1069,6 +1083,60 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
         return if (readable) peers else null
     }
 
+    override fun allUdpPeers(pkgs: Collection<String>): Map<String, Set<UdpPeer>> {
+        if (pkgs.isEmpty()) return emptyMap()
+        val uids = pkgs.mapNotNull { p -> packageUid(p)?.let { p to it } }
+        if (uids.isEmpty()) return emptyMap()
+        val contents = listOf("/proc/net/udp", "/proc/net/udp6").map { path ->
+            try {
+                File(path).readText()
+            } catch (_: Exception) {
+                RootShell.run(listOf("/system/bin/cat", path), check = false, timeoutSec = 5).output
+            }
+        }
+        val out = linkedMapOf<String, MutableSet<UdpPeer>>()
+        for ((pkg, uid) in uids) {
+            var readable = false
+            val set = mutableSetOf<UdpPeer>()
+            for (content in contents) {
+                val parsed = AndroidInspector.parseProcNetUdp(content, uid)
+                if (parsed != null) {
+                    readable = true
+                    set.addAll(parsed)
+                }
+            }
+            if (readable) out[pkg] = set
+        }
+        return out
+    }
+
+    override fun captureScreenRgba(): ScreenFrame? {
+        val path = "/data/local/tmp/.rejoin_cap.png"
+        val qPath = RootShell.quote(path)
+        val res = RootShell.runRaw("/system/bin/screencap -p $qPath && /system/bin/chmod 644 $qPath", check = false, timeoutSec = 5)
+        if (res.timedOut || res.exitCode != 0) return null
+        val file = File(path)
+        if (!file.exists() || !file.canRead()) return null
+        val bmp = BitmapFactory.decodeFile(path) ?: return null
+        return try {
+            val w = bmp.width
+            val h = bmp.height
+            if (w <= 0 || h <= 0) return null
+            val pixels = IntArray(w * h)
+            bmp.getPixels(pixels, 0, w, 0, 0, w, h)
+            ScreenFrame(pixels, w, h)
+        } finally {
+            bmp.recycle()
+        }
+    }
+
+    override fun findAccessibilityLeaveTap(pkg: String): Pair<Int, Int>? =
+        RejoinAccessibilityService.findDisconnectLeaveTap(pkg)
+
+    override fun tapScreen(x: Int, y: Int) {
+        RootShell.run(listOf("/system/bin/input", "tap", x.toString(), y.toString()), check = false, timeoutSec = 4)
+    }
+
     override fun windowChecks(pkg: String, uiXml: String?, tasksText: String?, windowsText: String?, surfaceText: String?): WindowChecks {
         val tText = tasksText ?: tasks()
         val wText = windowsText ?: windows()
@@ -1375,7 +1443,7 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
         }
         val targetW = safeBounds.right - safeBounds.left
         val targetH = safeBounds.bottom - safeBounds.top
-        val prefsUpdated = syncAppClonerWindowPrefs(pkg, 0, 0, targetW, targetH, stopFirst = launch)
+        val prefsUpdated = syncAppClonerWindowPrefs(pkg, 0, 0, targetW, targetH, stopFirst = false)
         val existingPre = if (!prefsUpdated) inspectPlacement(pkg) else null
         if (existingPre?.bounds != null && (existingPre.bounds.left < 0 || existingPre.bounds.top < 0)) {
             close(pkg)

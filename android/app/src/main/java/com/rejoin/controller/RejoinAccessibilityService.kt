@@ -156,6 +156,28 @@ class RejoinAccessibilityService : AccessibilityService() {
             }
         }
 
+        fun findDisconnectLeaveTap(pkg: String): Pair<Int, Int>? {
+            val nodes = dumpNodes(pkg) ?: return null
+            val texts = nodes.mapNotNull { n ->
+                listOf(n.text, n.desc).filter { it.isNotEmpty() }.joinToString(" ").trim().takeIf { it.isNotEmpty() }
+            }
+            if (texts.isEmpty()) return null
+            val state = AndroidInspector.inspectUiTexts(texts, emptyList())
+            val joined = texts.joinToString(" | ").lowercase()
+            val looksKicked = state == "disconnected" ||
+                listOf("disconnected", "you were kicked", "lost connection", "same account", "error code", "reconnect", "mất kết nối", "mã lỗi")
+                    .any { it in joined }
+            if (!looksKicked) return null
+            val leaveNode = nodes.firstOrNull { n ->
+                val label = listOf(n.text, n.desc).joinToString(" ").trim().lowercase()
+                label == "leave" || label == "rời" || label == "rời khỏi" ||
+                    Regex("""\b(?:leave|rời khỏi)\b""").containsMatchIn(label)
+            } ?: return null
+            clickNode(pkg, leaveNode.bounds)
+            val b = leaveNode.bounds
+            return ((b.left + b.right) / 2) to ((b.top + b.bottom) / 2)
+        }
+
         fun clickNode(pkg: String, bounds: RectBounds): Boolean {
             val svc = instance ?: return false
             return try {

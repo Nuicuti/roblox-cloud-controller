@@ -78,6 +78,7 @@
                   ".validate": "newData.isString() && newData.val().matches(/^([A-Za-z][A-Za-z0-9_]*[.])*[A-Za-z0-9_]*(noka|Noka|NOKA|roblox|Roblox|ROBLOX|arceus|Arceus|ARCEUS)[A-Za-z0-9_]*([.][A-Za-z0-9_]+)*$/)"
                 },
                 "enabled": { ".validate": "newData.isBoolean()" },
+                "force": { ".validate": "newData.isBoolean()" },
                 "fpsCap": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 120" },
                 "lowGraphics": { ".validate": "newData.isBoolean()" },
                 "rows": { ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 6" },

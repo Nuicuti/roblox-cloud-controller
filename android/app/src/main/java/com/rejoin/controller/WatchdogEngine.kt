@@ -18,9 +18,14 @@ data class HealthTracker(
     var socketLostSinceMs: Long? = null,
     var highRamHits: Int = 0,
     var authPaused: Boolean = false,
+    var leaveAttempts: Int = 0,
 )
 
-data class QueuedLaunch(val packageName: String, val forceStop: Boolean)
+data class QueuedLaunch(
+    val packageName: String,
+    val forceStop: Boolean,
+    val leaveTap: Pair<Int, Int>? = null,
+)
 
 data class DeferredLaunch(
     val pkg: String,
@@ -30,12 +35,14 @@ data class DeferredLaunch(
     val reason: String,
     val epoch: Long,
     val fromQueue: Boolean,
+    val leaveTap: Pair<Int, Int>? = null,
 )
 
 data class TelemetryInputs(
     val tasks: Map<String, Int>,
     val rssMap: Map<String, Int>,
     val runningMap: Map<String, Boolean>,
+    val inGameOnlineMap: Map<String, Boolean>,
     val memInfo: SystemMemInfo?,
     val deviceInfo: Pair<String, String>,
     val freeform: Boolean,
@@ -323,22 +330,74 @@ class WatchdogEngine(
         return profiles.getValue(pkg)
     }
 
-    fun layout(settings: GridSettings, launch: Boolean = true) {
+    private fun visibleWindowBounds(pkg: String, tasksText: String?, windowsText: String?): RectBounds? {
+        if (!windowsText.isNullOrEmpty() && AndroidInspector.checkWindowManager(windowsText, pkg) == false) {
+            return null
+        }
+        AndroidInspector.parseWindowFrame(windowsText, pkg)?.frame?.let { return it }
+        val tid = AndroidInspector.parseTasks(tasksText)[pkg]
+        if (tid != null) {
+            AndroidInspector.taskBounds(tasksText, tid).first?.let { return it }
+        }
+        val gs = grid ?: return null
+        val p = profiles[pkg] ?: return null
+        val (w, h) = try { android.displaySize() } catch (_: Exception) { return null }
+        val cells = AndroidInspector.gridBounds(w, h, gs.rows, gs.cols, gs.gap, gs.top, gs.bottom)
+        return if (p.slot in 1..cells.size) cells[p.slot - 1] else null
+    }
+
+    private fun detectVisualLeaveTap(
+        pkg: String,
+        tasksText: String?,
+        windowsText: String?,
+        screenFrame: ScreenFrame?,
+    ): Pair<Int, Int>? {
+        android.findAccessibilityLeaveTap(pkg)?.let { return it }
+        if (screenFrame == null) return null
+        if (!windowsText.isNullOrEmpty() && AndroidInspector.checkWindowManager(windowsText, pkg) == false) {
+            return null
+        }
+        val bounds = visibleWindowBounds(pkg, tasksText, windowsText)
+        return android.detectLeaveTap(pkg, bounds, screenFrame)
+    }
+
+    fun layout(settings: GridSettings, launch: Boolean = true): Pair<Int, Int> {
         if (!android.freeformSupported()) {
             throw AgentException("Máy chưa hỗ trợ/bật freeform. Dùng Bật cửa sổ tự do, rồi kiểm tra lại.")
         }
         if (launch) android.beginGridPass()
         val (w, h) = android.displaySize()
         val cells = AndroidInspector.gridBounds(w, h, settings.rows, settings.cols, settings.gap, settings.top, settings.bottom)
-        val selected = profiles.values.filter { it.enabled }
+        val selected = profiles.values.filter { it.enabled }.sortedBy { it.slot }
         if (selected.isEmpty()) throw AgentException("Chưa có bản nào bật quản lý.")
         if (selected.any { it.slot > cells.size }) throw AgentException("Có bản nằm ngoài số ô lưới; chỉnh vị trí hoặc tăng hàng/cột.")
 
+        val runningMap = try {
+            android.runningStates(selected.map { it.packageName })
+        } catch (_: Exception) {
+            selected.associate { it.packageName to android.running(it.packageName) }
+        }
+        val cfg = effectiveConfig()
         val failures = mutableListOf<String>()
-        for (p in selected.sortedBy { it.slot }) {
-            if (!launch && !android.running(p.packageName)) continue
+        var keptOnline = 0
+        var opened = 0
+        for (p in selected) {
+            val isRunning = runningMap[p.packageName] == true
+            if (!launch && !isRunning) continue
             try {
-                android.resize(p.packageName, cells[p.slot - 1], launch = launch)
+                if (isRunning) {
+                    // Resize existing live window into its grid cell WITHOUT killing the running game.
+                    android.resize(p.packageName, cells[p.slot - 1], launch = false)
+                    keptOnline++
+                } else {
+                    val (placeId, jobId) = effectiveTarget(p, cfg)
+                    android.resize(p.packageName, cells[p.slot - 1], launch = true, placeId = placeId, jobId = jobId)
+                    val nowMs = System.currentTimeMillis()
+                    health[p.packageName] = HealthTracker(lastCheckMs = nowMs, lastLaunchMs = nowMs)
+                    p.healthState = "booting"
+                    p.healthMessage = "Đang khởi chạy vào lưới."
+                    opened++
+                }
                 p.error = null
             } catch (e: AgentException) {
                 p.error = e.message
@@ -347,11 +406,24 @@ class WatchdogEngine(
         }
         saveState()
         if (failures.isNotEmpty()) throw AgentException(failures.joinToString("; "))
+        return keptOnline to opened
     }
 
-    private fun launchPackage(pkg: String, placeId: String, jobId: String, forceStop: Boolean) {
+    private fun launchPackage(
+        pkg: String,
+        placeId: String,
+        jobId: String,
+        forceStop: Boolean,
+        leaveTap: Pair<Int, Int>? = null,
+    ) {
         if (forceStop) {
             android.close(pkg)
+        } else if (leaveTap != null) {
+            android.tapScreen(leaveTap.first, leaveTap.second)
+            try {
+                Thread.sleep(1300)
+            } catch (_: InterruptedException) {
+            }
         }
         val currentGrid = grid
         if (currentGrid != null) {
@@ -366,16 +438,21 @@ class WatchdogEngine(
         }
     }
 
-    fun openProfile(pkg: String, forceStop: Boolean = false, nowMs: Long = System.currentTimeMillis()) {
+    fun openProfile(
+        pkg: String,
+        forceStop: Boolean = false,
+        nowMs: Long = System.currentTimeMillis(),
+        leaveTap: Pair<Int, Int>? = null,
+    ) {
         val profile = requireProfile(pkg)
         profile.enabled = true
         profile.error = null
         profile.healthState = "booting"
-        profile.healthMessage = "Đang khởi chạy vào game."
+        profile.healthMessage = if (leaveTap != null) "Đang bấm Leave và join lại game." else "Đang khởi chạy vào game."
         val cfg = effectiveConfig()
         val (placeId, jobId) = effectiveTarget(profile, cfg)
         saveState()
-        launchPackage(pkg, placeId, jobId, forceStop)
+        launchPackage(pkg, placeId, jobId, forceStop, leaveTap)
         val h = HealthTracker(lastCheckMs = nowMs, lastLaunchMs = nowMs)
         health[pkg] = h
         lastAnyLaunchMs = nowMs
@@ -384,12 +461,12 @@ class WatchdogEngine(
         saveState()
     }
 
-    fun enqueueLaunch(pkg: String, forceStop: Boolean = false) {
+    fun enqueueLaunch(pkg: String, forceStop: Boolean = false, leaveTap: Pair<Int, Int>? = null) {
         launchQueue.removeAll { it.packageName == pkg }
-        launchQueue.addLast(QueuedLaunch(pkg, forceStop))
+        launchQueue.addLast(QueuedLaunch(pkg, forceStop, leaveTap))
         profiles[pkg]?.apply {
             healthState = "booting"
-            healthMessage = "Đang xếp hàng khởi chạy tuần tự."
+            healthMessage = if (leaveTap != null) "Đang xếp hàng bấm Leave & join lại." else "Đang xếp hàng khởi chạy tuần tự."
         }
     }
 
@@ -402,7 +479,7 @@ class WatchdogEngine(
             if (canLaunch(item.packageName, h, nowMs, cfg)) {
                 launchQueue.removeFirst()
                 try {
-                    openProfile(item.packageName, forceStop = item.forceStop, nowMs = nowMs)
+                    openProfile(item.packageName, forceStop = item.forceStop, nowMs = nowMs, leaveTap = item.leaveTap)
                 } catch (e: Exception) {
                     profiles[item.packageName]?.apply {
                         error = e.message
@@ -508,11 +585,51 @@ class WatchdogEngine(
             }
             "rejoin" -> {
                 val pkg = command.getString("package")
+                val force = command.optBoolean("force", false)
                 val p = requireProfile(pkg)
                 p.enabled = true
                 p.autoReopen = true
-                openProfile(pkg, forceStop = true, nowMs = nowMs)
-                "Đã rejoin ${p.label}."
+                if (force || !android.running(pkg)) {
+                    openProfile(pkg, forceStop = force, nowMs = nowMs)
+                    if (force) "Đã tắt & mở lại ${p.label}." else "Đã mở ${p.label}."
+                } else {
+                    val peers = try { android.udpPeers(pkg) } catch (_: Exception) { null }
+                    val tasksText = try { android.tasks() } catch (_: Exception) { "" }
+                    val windowsText = try { android.windows() } catch (_: Exception) { "" }
+                    val accMap = android.accessibilityTexts()
+                    val fastState = AndroidInspector.inspectActivityAuthOrAnr(tasksText, windowsText, pkg)
+                    val uiState = accMap?.let {
+                        AndroidInspector.inspectUiTexts(it[pkg].orEmpty(), it["android"].orEmpty())
+                    } ?: "unknown"
+                    var leaveTap = if ((peers?.isNotEmpty()) != true) {
+                        android.findAccessibilityLeaveTap(pkg)
+                    } else null
+                    if ((peers?.isNotEmpty()) != true && leaveTap == null) {
+                        val screen = try { android.captureScreenRgba() } catch (_: Exception) { null }
+                        leaveTap = detectVisualLeaveTap(pkg, tasksText, windowsText, screen)
+                    }
+                    when {
+                        leaveTap != null || fastState == "disconnected" || uiState == "disconnected" -> {
+                            openProfile(pkg, forceStop = false, nowMs = nowMs, leaveTap = leaveTap)
+                            if (leaveTap != null) {
+                                "${p.label}: Đã bấm Leave trên bảng lỗi & join lại game (không tắt app)."
+                            } else {
+                                "${p.label}: Phát hiện mất kết nối; đã join lại game (không tắt app)."
+                            }
+                        }
+                        peers != null && peers.isNotEmpty() -> {
+                            p.healthState = "running"
+                            p.healthMessage = "Đang online trong game (${peers.size} kết nối server) — giữ nguyên."
+                            p.error = null
+                            saveState()
+                            "${p.label} đang online trong game — giữ nguyên không tắt (dùng Force nếu muốn tắt hẳn)."
+                        }
+                        else -> {
+                            openProfile(pkg, forceStop = false, nowMs = nowMs)
+                            "${p.label}: Đang ở sảnh; đã gửi link join vào game (không tắt app)."
+                        }
+                    }
+                }
             }
             "remove_profile" -> {
                 val pkg = command.getString("package")
@@ -602,24 +719,112 @@ class WatchdogEngine(
                 msg
             }
             "open_all", "rejoin_all" -> {
-                val forceStop = action == "rejoin_all"
+                val forceStop = action == "rejoin_all" && command.optBoolean("force", false)
+                val smartRejoin = action == "rejoin_all" && !forceStop
                 val selected = profiles.values.filter { it.enabled }.sortedBy { it.slot }
                 if (selected.isEmpty()) throw AgentException("Chưa có bản nào đang bật quản lý.")
                 for (p in selected) p.autoReopen = true
                 val cfg = effectiveConfig()
-                if (cfg.delayBetweenClonesSec > 0) {
+
+                if (!smartRejoin) {
+                    if (cfg.delayBetweenClonesSec > 0) {
+                        for (p in selected) {
+                            health.remove(p.packageName)
+                            enqueueLaunch(p.packageName, forceStop)
+                        }
+                        saveState()
+                        drainLaunchQueue(nowMs)
+                        val verb = if (forceStop) "tắt & rejoin" else "mở"
+                        "Đã xếp hàng $verb tuần tự ${selected.size} bản (giãn cách ${cfg.delayBetweenClonesSec}s)."
+                    } else {
+                        for (p in selected) openProfile(p.packageName, forceStop = forceStop, nowMs = nowMs)
+                        val verb = if (forceStop) "tắt & rejoin" else "mở"
+                        "Đã $verb ${selected.size} bản đang bật."
+                    }
+                } else {
+                    val selectedPkgs = selected.map { it.packageName }
+                    val runningMap = try {
+                        android.runningStates(selectedPkgs)
+                    } catch (_: Exception) {
+                        selectedPkgs.associateWith { android.running(it) }
+                    }
+                    val alivePkgs = selectedPkgs.filter { runningMap[it] == true }
+                    val peersMap = if (alivePkgs.isNotEmpty()) {
+                        try { android.allUdpPeers(alivePkgs) } catch (_: Exception) { emptyMap() }
+                    } else emptyMap()
+                    val offlineAlive = alivePkgs.filter { (peersMap[it]?.isNotEmpty()) != true }
+                    val tasksText = if (offlineAlive.isNotEmpty()) try { android.tasks() } catch (_: Exception) { "" } else ""
+                    val windowsText = if (offlineAlive.isNotEmpty()) try { android.windows() } catch (_: Exception) { "" } else ""
+                    val accMap = if (offlineAlive.isNotEmpty()) android.accessibilityTexts() else null
+                    var cachedScreen: ScreenFrame? = null
+                    var screenCaptured = false
+
+                    var keptOnline = 0
+                    var leftKicked = 0
+                    var joinedWarm = 0
+                    var openedNew = 0
                     for (p in selected) {
-                        health.remove(p.packageName)
-                        enqueueLaunch(p.packageName, forceStop)
+                        val pkg = p.packageName
+                        if (runningMap[pkg] != true) {
+                            health.remove(pkg)
+                            enqueueLaunch(pkg, forceStop = false)
+                            openedNew++
+                            continue
+                        }
+                        val peers = peersMap[pkg]
+                        val fastState = AndroidInspector.inspectActivityAuthOrAnr(tasksText, windowsText, pkg)
+                        val uiState = accMap?.let {
+                            AndroidInspector.inspectUiTexts(it[pkg].orEmpty(), it["android"].orEmpty())
+                        } ?: "unknown"
+                        var leaveTap = if ((peers?.isNotEmpty()) != true) {
+                            android.findAccessibilityLeaveTap(pkg)
+                        } else null
+                        if ((peers?.isNotEmpty()) != true && leaveTap == null) {
+                            if (!screenCaptured) {
+                                cachedScreen = try { android.captureScreenRgba() } catch (_: Exception) { null }
+                                screenCaptured = true
+                            }
+                            leaveTap = detectVisualLeaveTap(pkg, tasksText, windowsText, cachedScreen)
+                        }
+                        if (leaveTap != null || fastState == "disconnected" || uiState == "disconnected") {
+                            health.remove(pkg)
+                            enqueueLaunch(pkg, forceStop = false, leaveTap = leaveTap)
+                            leftKicked++
+                        } else if (peers != null && peers.isNotEmpty()) {
+                            p.healthState = "running"
+                            p.healthMessage = "Đang online trong game (${peers.size} kết nối server) — giữ nguyên."
+                            p.error = null
+                            keptOnline++
+                        } else {
+                            health.remove(pkg)
+                            enqueueLaunch(pkg, forceStop = false)
+                            joinedWarm++
+                        }
                     }
                     saveState()
-                    drainLaunchQueue(nowMs)
-                    val verb = if (forceStop) "rejoin" else "mở"
-                    "Đã xếp hàng $verb tuần tự ${selected.size} bản (giãn cách ${cfg.delayBetweenClonesSec}s)."
-                } else {
-                    for (p in selected) openProfile(p.packageName, forceStop = forceStop, nowMs = nowMs)
-                    val verb = if (forceStop) "rejoin" else "mở"
-                    "Đã $verb ${selected.size} bản đang bật."
+                    val toRun = leftKicked + joinedWarm + openedNew
+                    if (toRun > 0) {
+                        if (cfg.delayBetweenClonesSec > 0) {
+                            drainLaunchQueue(nowMs)
+                        } else {
+                            while (drainLaunchQueue(nowMs)) {}
+                        }
+                    }
+                    if (toRun == 0) {
+                        "Tất cả $keptOnline tab đang online trong game — giữ nguyên không tắt."
+                    } else {
+                        val parts = buildList {
+                            if (keptOnline > 0) add("giữ nguyên $keptOnline tab online")
+                            if (leftKicked > 0) add("bấm Leave & join lại $leftKicked tab")
+                            if (joinedWarm > 0) add("join lại không tắt app $joinedWarm tab")
+                            if (openedNew > 0) add("mở mới $openedNew tab")
+                        }.joinToString("; ")
+                        if (cfg.delayBetweenClonesSec > 0 && toRun > 1) {
+                            "Đã xếp hàng tuần tự ($parts; giãn cách ${cfg.delayBetweenClonesSec}s)."
+                        } else {
+                            "Hoàn tất: $parts."
+                        }
+                    }
                 }
             }
             "grid" -> {
@@ -644,11 +849,11 @@ class WatchdogEngine(
                         bottom = command.getInt("bottom"),
                     )
                 }
-                layout(gs, launch = true)
+                val (keptOnline, opened) = layout(gs, launch = true)
                 grid = gs
                 saveState()
                 val note = android.lastResizeNote()?.let { " $it" } ?: ""
-                "Đã xếp lưới ${gs.rows}×${gs.cols} (${w}×${h}).$note"
+                "Đã xếp lưới ${gs.rows}×${gs.cols} (${w}×${h}): giữ nguyên $keptOnline tab đang chạy (không tắt game), mở mới $opened tab.$note"
             }
             "enable_freeform" -> {
                 windowBackup = android.setFreeformFlags(true, windowBackup)
@@ -822,7 +1027,16 @@ class WatchdogEngine(
         return true
     }
 
-    private fun recoverPackage(pkg: String, p: CloneProfile, h: HealthTracker, nowMs: Long, cfg: RejoinConfig, reason: String, forceStop: Boolean): Boolean {
+    private fun recoverPackage(
+        pkg: String,
+        p: CloneProfile,
+        h: HealthTracker,
+        nowMs: Long,
+        cfg: RejoinConfig,
+        reason: String,
+        forceStop: Boolean,
+        leaveTap: Pair<Int, Int>? = null,
+    ): Boolean {
         if (!canLaunch(pkg, h, nowMs, cfg)) return false
         val windowMs = maxOf(600_000L, cfg.maxRejoinIntervalSec * 2000L)
         while (h.attempts.isNotEmpty() && nowMs - h.attempts.first() > windowMs) {
@@ -847,7 +1061,7 @@ class WatchdogEngine(
         h.missing = 0
         val (placeId, jobId) = effectiveTarget(p, cfg)
         return try {
-            launchPackage(pkg, placeId, jobId, forceStop)
+            launchPackage(pkg, placeId, jobId, forceStop, leaveTap)
             h.lastLaunchMs = nowMs
             lastAnyLaunchMs = nowMs
             lastAnyLaunchPkg = pkg
@@ -871,9 +1085,15 @@ class WatchdogEngine(
         val uiXml: String?,
         val accessibilityMap: Map<String, List<String>>?,
         val rssMap: Map<String, Int>,
+        val screenFrame: ScreenFrame? = null,
     )
 
-    private fun captureSnapshot(nowMs: Long, cfg: RejoinConfig, targetPkgs: Collection<String> = profiles.keys): CycleSnapshot {
+    private fun captureSnapshot(
+        nowMs: Long,
+        cfg: RejoinConfig,
+        targetPkgs: Collection<String> = profiles.keys,
+        peersMap: Map<String, Set<UdpPeer>> = emptyMap(),
+    ): CycleSnapshot {
         val tasksText = try { android.tasks() } catch (_: Exception) { "" }
         if (shouldYieldForCommand()) return CycleSnapshot(tasksText, "", "", null, null, emptyMap())
         val windowsText = try { android.windows() } catch (_: Exception) { "" }
@@ -885,9 +1105,22 @@ class WatchdogEngine(
         } else {
             emptyMap()
         }
+        val needScreenCheck = cfg.detectDisconnectUi && !shouldYieldForCommand() && targetPkgs.any { pkg ->
+            val h = health[pkg]
+            val inBoot = h?.lastLaunchMs != null && nowMs - h.lastLaunchMs!! < cfg.bootGraceSec * 1000L
+            if (inBoot) return@any false
+            val peers = if (peersMap.containsKey(pkg)) peersMap[pkg] else try { android.udpPeers(pkg) } catch (_: Exception) { null }
+            val inGame = peers != null && peers.isNotEmpty()
+            !inGame && android.findAccessibilityLeaveTap(pkg) == null
+        }
+        val screenFrame = if (needScreenCheck) {
+            try { android.captureScreenRgba() } catch (_: Exception) { null }
+        } else {
+            null
+        }
         // Never run blocking `uiautomator dump` inside the periodic watchdog loop;
-        // UI Disconnect/CAPTCHA text reads use AccessibilityService when enabled, while WindowManager/Activity/UDP checks run lock-free.
-        return CycleSnapshot(tasksText, windowsText, surfacesText, null, accMap, rssMap)
+        // UI Disconnect/CAPTCHA text reads use AccessibilityService + targeted ScreenFrame modal inspection for offline windows.
+        return CycleSnapshot(tasksText, windowsText, surfacesText, null, accMap, rssMap, screenFrame)
     }
 
     private fun scheduleRecoveryStateLocked(
@@ -900,6 +1133,7 @@ class WatchdogEngine(
         forceStop: Boolean,
         epoch: Long,
         fromQueue: Boolean,
+        leaveTap: Pair<Int, Int>? = null,
     ): DeferredLaunch? {
         if (!canLaunch(pkg, h, nowMs, cfg)) return null
         val windowMs = maxOf(600_000L, cfg.maxRejoinIntervalSec * 2000L)
@@ -932,7 +1166,7 @@ class WatchdogEngine(
         p.healthState = "booting"
         p.healthMessage = reason
         p.error = null
-        return DeferredLaunch(pkg, placeId, jobId, forceStop, reason, epoch, fromQueue)
+        return DeferredLaunch(pkg, placeId, jobId, forceStop, reason, epoch, fromQueue, leaveTap)
     }
 
     private fun pickReadyQueuedLaunchLocked(nowMs: Long, cfg: RejoinConfig, epoch: Long): DeferredLaunch? {
@@ -944,7 +1178,7 @@ class WatchdogEngine(
                 launchQueue.removeFirst()
                 val p = profiles[item.packageName]
                 if (p != null) {
-                    val launchMsg = "Đang khởi chạy vào game."
+                    val launchMsg = if (item.leaveTap != null) "Đang bấm Leave và join lại game." else "Đang khởi chạy vào game."
                     p.enabled = true
                     p.error = null
                     p.healthState = "booting"
@@ -955,7 +1189,7 @@ class WatchdogEngine(
                     lastAnyLaunchPkg = item.packageName
                     p.lastRejoinAt = System.currentTimeMillis()
                     saveState()
-                    return DeferredLaunch(item.packageName, placeId, jobId, item.forceStop, launchMsg, epoch, fromQueue = true)
+                    return DeferredLaunch(item.packageName, placeId, jobId, item.forceStop, launchMsg, epoch, fromQueue = true, leaveTap = item.leaveTap)
                 }
                 return null
             }
@@ -973,7 +1207,7 @@ class WatchdogEngine(
                 if (!launch.fromQueue && !watch) return
             }
             try {
-                launchPackage(launch.pkg, launch.placeId, launch.jobId, launch.forceStop)
+                launchPackage(launch.pkg, launch.placeId, launch.jobId, launch.forceStop, launch.leaveTap)
                 synchronized(stateLock) {
                     val p = profiles[launch.pkg] ?: return@synchronized
                     val doneNow = System.currentTimeMillis()
@@ -1012,11 +1246,12 @@ class WatchdogEngine(
         onDeferRecovery: ((DeferredLaunch) -> Unit)? = null,
         epoch: Long = 0L,
     ) {
-        fun triggerRecovery(reason: String, forceStop: Boolean) {
+        fun triggerRecovery(reason: String, forceStop: Boolean, leaveTap: Pair<Int, Int>? = null) {
             if (onDeferRecovery != null) {
-                scheduleRecoveryStateLocked(pkg, p, h, nowMs, cfg, reason, forceStop, epoch, fromQueue = false)?.let(onDeferRecovery)
+                scheduleRecoveryStateLocked(pkg, p, h, nowMs, cfg, reason, forceStop, epoch, fromQueue = false, leaveTap = leaveTap)
+                    ?.let(onDeferRecovery)
             } else {
-                recoverPackage(pkg, p, h, nowMs, cfg, reason, forceStop)
+                recoverPackage(pkg, p, h, nowMs, cfg, reason, forceStop, leaveTap)
             }
         }
 
@@ -1077,7 +1312,7 @@ class WatchdogEngine(
 
         val peers = if (usePrefetchedPeers) {
             prefetchedPeers
-        } else if (cfg.teleportDetection || cfg.networkTimeoutSec > 0) {
+        } else if (cfg.teleportDetection || cfg.networkTimeoutSec > 0 || cfg.detectDisconnectUi) {
             try { android.udpPeers(pkg) } catch (_: Exception) { null }
         } else null
 
@@ -1092,20 +1327,31 @@ class WatchdogEngine(
                 h.lastPeers.clear()
                 h.lastPeers.addAll(peers)
                 h.socketLostSinceMs = null
-            } else if (cfg.networkTimeoutSec > 0 && h.lastPeers.isNotEmpty()) {
+                h.leaveAttempts = 0
+            } else if (cfg.networkTimeoutSec > 0 && (h.lastPeers.isNotEmpty() || h.lastLaunchMs != null)) {
                 val inTpGrace = cfg.teleportDetection && h.teleportAtMs != null && nowMs - h.teleportAtMs!! < cfg.teleportGraceSec * 1000L
                 if (!inTpGrace) {
                     if (h.socketLostSinceMs == null) h.socketLostSinceMs = nowMs
                     else if (nowMs - h.socketLostSinceMs!! >= cfg.networkTimeoutSec * 1000L) {
                         p.healthState = "disconnected"
-                        triggerRecovery("Mất kết nối mạng UDP quá thời gian chờ; đang rejoin.", forceStop = true)
+                        h.leaveAttempts += 1
+                        if (h.leaveAttempts == 1) {
+                            triggerRecovery("Mất kết nối mạng UDP quá thời gian chờ; đang join lại (không tắt app).", forceStop = false)
+                        } else {
+                            triggerRecovery("Mất kết nối mạng UDP lặp lại; đang khởi động lại tab.", forceStop = true)
+                        }
                         return
                     }
                 }
             }
         }
 
-        val effectiveDisconnect = fastState == "disconnected" || uiState == "disconnected"
+        val inGame = peers != null && peers.isNotEmpty()
+        val leaveTap = if (cfg.detectDisconnectUi && !inGame) {
+            android.findAccessibilityLeaveTap(pkg) ?: detectVisualLeaveTap(pkg, snap.tasksText, snap.windowsText, snap.screenFrame)
+        } else null
+
+        val effectiveDisconnect = fastState == "disconnected" || uiState == "disconnected" || leaveTap != null
         if (cfg.detectDisconnectUi && effectiveDisconnect) {
             val inTpGrace = cfg.teleportDetection && h.teleportAtMs != null && nowMs - h.teleportAtMs!! < cfg.teleportGraceSec * 1000L
             if (inTpGrace) {
@@ -1115,9 +1361,20 @@ class WatchdogEngine(
             } else {
                 if (h.disconnectSinceMs == null) h.disconnectSinceMs = nowMs
                 p.healthState = "disconnected"
-                p.healthMessage = "Phát hiện màn hình mất kết nối; đang chờ xác nhận."
+                p.healthMessage = if (leaveTap != null) {
+                    "Phát hiện bị kick / bảng lỗi có nút Leave; đang chờ xác nhận để Leave & join lại."
+                } else {
+                    "Phát hiện màn hình mất kết nối; đang chờ xác nhận."
+                }
                 if (nowMs - h.disconnectSinceMs!! >= cfg.disconnectConfirmSec * 1000L) {
-                    triggerRecovery("Xác nhận mất kết nối; đang force-stop và rejoin.", forceStop = true)
+                    h.leaveAttempts += 1
+                    if (leaveTap != null && h.leaveAttempts <= 2) {
+                        triggerRecovery("Đã phát hiện chữ Leave; bấm Leave để join lại (không tắt app).", forceStop = false, leaveTap = leaveTap)
+                    } else if (uiState == "disconnected" && h.leaveAttempts == 1) {
+                        triggerRecovery("Xác nhận mất kết nối; đang join lại game (giữ app).", forceStop = false)
+                    } else {
+                        triggerRecovery("Xác nhận mất kết nối; đang khởi động lại tab.", forceStop = true)
+                    }
                     return
                 }
             }
@@ -1148,7 +1405,11 @@ class WatchdogEngine(
         h.healthySinceMs = h.healthySinceMs ?: nowMs
         if (p.healthState !in setOf("teleporting", "disconnected", "window_closed")) {
             p.healthState = "running"
-            p.healthMessage = "Đang hoạt động bình thường."
+            p.healthMessage = when {
+                peers != null && peers.isNotEmpty() -> "Đang online trong game (${peers.size} kết nối server)."
+                peers != null -> "Đang ở sảnh / chờ kết nối server."
+                else -> "Đang hoạt động bình thường."
+            }
         }
         if (nowMs - h.healthySinceMs!! >= 60_000L) {
             h.attempts.clear()
@@ -1202,16 +1463,14 @@ class WatchdogEngine(
 
         val runningPkgs = duePkgs.filter { runningMap[it] == true }
         var snap: CycleSnapshot? = null
-        val udpPeersMap = mutableMapOf<String, Set<UdpPeer>?>()
+        var udpPeersMap: Map<String, Set<UdpPeer>> = emptyMap()
         if (runningPkgs.isNotEmpty()) {
-            snap = captureSnapshot(nowMs, cfg, runningPkgs)
-            if (shouldYieldForCommand()) return
-            if (cfg.teleportDetection || cfg.networkTimeoutSec > 0) {
-                for (pkg in runningPkgs) {
-                    if (shouldYieldForCommand()) return
-                    udpPeersMap[pkg] = try { android.udpPeers(pkg) } catch (_: Exception) { null }
-                }
+            if (cfg.teleportDetection || cfg.networkTimeoutSec > 0 || cfg.detectDisconnectUi) {
+                udpPeersMap = try { android.allUdpPeers(runningPkgs) } catch (_: Exception) { emptyMap() }
+                if (shouldYieldForCommand()) return
             }
+            snap = captureSnapshot(nowMs, cfg, runningPkgs, udpPeersMap)
+            if (shouldYieldForCommand()) return
         }
         if (shouldYieldForCommand()) return
 
@@ -1313,12 +1572,19 @@ class WatchdogEngine(
         val tasks = try { AndroidInspector.parseTasks(android.tasks()) } catch (_: Exception) { emptyMap() }
         val rssMap = try { android.processRssMb(pkgs) } catch (_: Exception) { emptyMap() }
         val runningMap = try { android.runningStates(pkgs) } catch (_: Exception) { pkgs.associateWith { android.running(it) } }
+        val alivePkgs = pkgs.filter { runningMap[it] == true }
+        val peersMap = if (alivePkgs.isNotEmpty()) {
+            try { android.allUdpPeers(alivePkgs) } catch (_: Exception) { emptyMap() }
+        } else {
+            emptyMap()
+        }
+        val inGameOnlineMap = pkgs.associateWith { (peersMap[it]?.isNotEmpty()) == true }
         val memInfo = try { android.memoryInfo() } catch (_: Exception) { null }
         val devInfo = android.deviceInfo()
         val freeform = android.freeformSupported()
         val accEnabled = android.isAccessibilityEnabled()
         val diag = if (includeDiag) android.collectDiagnostics(pkgs) else null
-        return TelemetryInputs(tasks, rssMap, runningMap, memInfo, devInfo, freeform, accEnabled, diag)
+        return TelemetryInputs(tasks, rssMap, runningMap, inGameOnlineMap, memInfo, devInfo, freeform, accEnabled, diag)
     }
 
     fun buildTelemetryFromInputs(inputs: TelemetryInputs, includeDiag: Boolean = false): JSONObject {
@@ -1328,6 +1594,7 @@ class WatchdogEngine(
             val acc = accounts[pkg]
             val item = p.toStateJson().apply {
                 put("running", isRunning)
+                put("inGameOnline", isRunning && (inputs.inGameOnlineMap[pkg] == true))
                 put("hasAccount", acc != null)
                 put("hasPassword", acc?.password?.isNotEmpty() == true)
                 put("hasCookie", acc?.cookie?.isNotEmpty() == true)

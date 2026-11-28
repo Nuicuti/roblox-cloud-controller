@@ -683,4 +683,147 @@ class WatchdogEngineTest {
         releaseLaunch.countDown()
         worker.join(2000)
     }
+
+    private fun renderSyntheticModal(twoButtons: Boolean, deltaLightBox: Boolean = false, blankDark: Boolean = false): ScreenFrame {
+        val w = 1280
+        val h = 720
+        val pixels = IntArray(w * h) { 0xFF12161E.toInt() }
+        fun fillRect(l: Int, t: Int, r: Int, b: Int, color: Int) {
+            for (y in t.coerceIn(0, h - 1)..b.coerceIn(0, h - 1)) {
+                val off = y * w
+                for (x in l.coerceIn(0, w - 1)..r.coerceIn(0, w - 1)) {
+                    pixels[off + x] = color
+                }
+            }
+        }
+        if (blankDark) {
+            fillRect(0, 0, w - 1, h - 1, 0xFF040404.toInt())
+            fillRect(300, 165, 332, 197, 0xFFCC4444.toInt())
+            return ScreenFrame(pixels, w, h)
+        }
+        if (deltaLightBox) {
+            fillRect(140, 96, 498, 288, 0xFFD4D6D8.toInt())
+            fillRect(210, 145, 420, 175, 0xFF9ED4F0.toInt())
+            return ScreenFrame(pixels, w, h)
+        }
+        // Roblox dark ErrorPrompt centered in cell [0, 18, 638, 342] (after ~48px chrome -> y=66..338)
+        fillRect(140, 88, 498, 308, 0xFF393B3D.toInt())
+        // Horizontal divider + "Disconnected" + error message simulated strokes
+        fillRect(160, 134, 478, 136, 0xFF626568.toInt())
+        fillRect(245, 108, 392, 120, 0xFFEEEEEE.toInt())
+        fillRect(188, 160, 446, 172, 0xFFD0D2D4.toInt())
+        fillRect(208, 184, 426, 194, 0xFFD0D2D4.toInt())
+        if (!twoButtons) {
+            // Single wide white "Leave" button
+            fillRect(172, 250, 466, 286, 0xFFFFFFFF.toInt())
+            fillRect(292, 262, 346, 274, 0xFF1F2123.toInt())
+        } else {
+            // Left outlined "Leave" button + Right white "Reconnect" button
+            fillRect(164, 250, 308, 286, 0xFF8C8F94.toInt())
+            fillRect(166, 252, 306, 284, 0xFF393B3D.toInt())
+            fillRect(212, 262, 260, 274, 0xFFEAECEF.toInt())
+            fillRect(330, 250, 474, 286, 0xFFFFFFFF.toInt())
+            fillRect(374, 262, 430, 274, 0xFF1F2123.toInt())
+        }
+        return ScreenFrame(pixels, w, h)
+    }
+
+    @Test
+    fun `leave modal detector locates Leave button on 1-btn and 2-btn modals and ignores Delta loading screens`() {
+        val cell = RectBounds(0, 18, 638, 342)
+        val oneBtn = LeaveModalDetector.detectLeaveButton(renderSyntheticModal(twoButtons = false), cell)
+        assertTrue(oneBtn != null)
+        assertEquals(1, oneBtn!!.buttonCount)
+        assertTrue(oneBtn.tapX in 260..378 && oneBtn.tapY in 250..286)
+
+        val twoBtn = LeaveModalDetector.detectLeaveButton(renderSyntheticModal(twoButtons = true), cell)
+        assertTrue(twoBtn != null)
+        assertEquals(2, twoBtn!!.buttonCount)
+        assertTrue("Expected tap on LEFT Leave button, got ${twoBtn.tapX}", twoBtn.tapX in 164..308 && twoBtn.tapY in 250..286)
+
+        assertEquals(null, LeaveModalDetector.detectLeaveButton(renderSyntheticModal(twoButtons = false, deltaLightBox = true), cell))
+        assertEquals(null, LeaveModalDetector.detectLeaveButton(renderSyntheticModal(twoButtons = false, blankDark = true), cell))
+    }
+
+    @Test
+    fun `grid keeps already-running apps alive and smart rejoin keeps online apps while tapping Leave on kicked tabs`() {
+        val dir = tempFolder.newFolder("smart-grid-rejoin")
+        val crypto = CryptoStore(dir)
+        val opened = mutableListOf<Triple<String, String, String>>()
+        val closed = mutableListOf<String>()
+        val resizedLaunchFlags = mutableListOf<Pair<String, Boolean>>()
+        val tapped = mutableListOf<Pair<Int, Int>>()
+        val kickedFrame = renderSyntheticModal(twoButtons = false)
+        val dev = object : AndroidDevice {
+            override fun packages() = listOf("premium.nokaA", "premium.nokaB", "premium.nokaC", "premium.nokaD")
+            override fun running(pkg: String) = pkg != "premium.nokaD"
+            override fun tasks() = ""
+            override fun windows() = "WINDOW MANAGER WINDOWS\n" +
+                "  Window #1 Window{1 u0 premium.nokaA/Main}: mFrame=[0,18][638,342]\n" +
+                "  Window #2 Window{2 u0 premium.nokaB/Main}: mFrame=[642,18][1276,342]\n" +
+                "  Window #3 Window{3 u0 premium.nokaC/Main}: mFrame=[0,346][638,670]\n"
+            override fun surfaces() = ""
+            override fun uiTreeXml() = ""
+            override fun accessibilityTexts(): Map<String, List<String>>? = null
+            override fun udpPeers(pkg: String) = when (pkg) {
+                "premium.nokaA" -> setOf(UdpPeer("01020304", 53640)) // Online in-game
+                else -> emptySet() // nokaB kicked, nokaC lobby
+            }
+            override fun captureScreenRgba() = kickedFrame
+            override fun detectLeaveTap(pkg: String, bounds: RectBounds?, screen: ScreenFrame?): Pair<Int, Int>? =
+                if (pkg == "premium.nokaB") 319 to 268 else null
+            override fun tapScreen(x: Int, y: Int) { tapped.add(x to y) }
+            override fun windowChecks(pkg: String, uiXml: String?, tasksText: String?, windowsText: String?, surfaceText: String?) =
+                WindowChecks(true, true, true, true)
+            override fun displaySize() = 1280 to 720
+            override fun freeformSupported() = true
+            override fun open(pkg: String, freeform: Boolean, placeId: String, jobId: String) {
+                opened.add(Triple(pkg, placeId, jobId))
+            }
+            override fun close(pkg: String) { closed.add(pkg) }
+            override fun resize(pkg: String, bounds: RectBounds, launch: Boolean, placeId: String, jobId: String): Int {
+                resizedLaunchFlags.add(pkg to launch)
+                if (launch) opened.add(Triple(pkg, placeId, jobId))
+                return 1
+            }
+            override fun setFreeformFlags(enabled: Boolean, previousBackup: Map<String, String>?) = emptyMap<String, String>()
+            override fun deviceInfo() = "Redfinger Test" to "10"
+        }
+        val engine = WatchdogEngine(storageDir = dir, android = dev, crypto = crypto)
+        engine.scan()
+        val cfg = RejoinConfig(enabled = true, placeId = "2809202155", checkIntervalSec = 5, delayBetweenClonesSec = 0, disconnectConfirmSec = 5)
+        engine.execute(JSONObject().put("action", "set_rejoin_config").put("config", cfg.toJson()))
+
+        // 1) Grid arranges running nokaA/B/C without killing/launching them, and opens only stopped nokaD.
+        val gridMsg = engine.execute(
+            JSONObject().put("action", "grid").put("rows", 2).put("cols", 2).put("gap", 4).put("top", 18).put("bottom", 48),
+        )
+        assertTrue(gridMsg.contains("2×2"))
+        assertTrue(closed.isEmpty())
+        assertTrue(resizedLaunchFlags.contains("premium.nokaA" to false))
+        assertTrue(resizedLaunchFlags.contains("premium.nokaD" to true))
+        assertEquals(listOf("premium.nokaD"), opened.map { it.first })
+
+        // 2) Smart rejoin_all keeps online nokaA untouched, taps Leave & rejoins nokaB without closing,
+        // sends warm join to nokaC, and opens nokaD — zero force-stops!
+        opened.clear()
+        val rejMsg = engine.execute(JSONObject().put("action", "rejoin_all"))
+        assertTrue(closed.isEmpty())
+        assertFalse(opened.any { it.first == "premium.nokaA" })
+        assertTrue(opened.any { it.first == "premium.nokaB" && it.second == "2809202155" })
+        assertTrue(opened.any { it.first == "premium.nokaC" && it.second == "2809202155" })
+        assertEquals(listOf(319 to 268), tapped)
+        assertTrue(rejMsg.contains("giữ nguyên 1"))
+
+        // 3) Watchdog also automatically detects Leave modal on nokaB after disconnectConfirmSec and leaves without force-stop.
+        opened.clear()
+        tapped.clear()
+        engine.health["premium.nokaB"] = HealthTracker(lastCheckMs = 90_000, lastLaunchMs = 1_000)
+        engine.watchdog(200_000) // first detection sets disconnectSinceMs
+        assertTrue(tapped.isEmpty())
+        engine.watchdog(206_000) // confirmed -> taps Leave + deep link rejoin without close()
+        assertTrue(closed.isEmpty())
+        assertEquals(listOf(319 to 268), tapped)
+        assertTrue(opened.any { it.first == "premium.nokaB" })
+    }
 }

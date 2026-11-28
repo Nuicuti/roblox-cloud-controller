@@ -78,5 +78,30 @@ object RootShell {
             } catch (_: Exception) {
             }
         }
+        try {
+            val accService = "$packageName/${RejoinAccessibilityService::class.java.name}"
+            val currentAcc = run(
+                listOf("/system/bin/settings", "get", "secure", "enabled_accessibility_services"),
+                check = false,
+                timeoutSec = 4,
+            ).output.trim()
+            val entries = currentAcc
+                .takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
+                ?.split(':')
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                ?.toMutableList()
+                ?: mutableListOf()
+            if (accService !in entries) {
+                entries.add(accService)
+                run(
+                    listOf("/system/bin/settings", "put", "secure", "enabled_accessibility_services", entries.joinToString(":")),
+                    check = false,
+                    timeoutSec = 4,
+                )
+            }
+            run(listOf("/system/bin/settings", "put", "secure", "accessibility_enabled", "1"), check = false, timeoutSec = 4)
+        } catch (_: Exception) {
+        }
     }
 }

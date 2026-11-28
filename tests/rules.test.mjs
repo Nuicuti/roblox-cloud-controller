@@ -78,7 +78,8 @@ test('rejoin config and global roblox packages pass rules while invalid bounds f
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/rst1'), { ...baseCmd, id: 'rst1', action: 'restore_profiles' }));
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/trim1'), { ...baseCmd, id: 'trim1', action: 'trim_ram' }));
   await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/opt1'), { ...baseCmd, id: 'opt1', action: 'optimize_ram', fpsCap: 15, lowGraphics: true }));
-  await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/rej1'), { ...baseCmd, id: 'rej1', action: 'rejoin', package: 'com.roblox.client' }));
+  await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/rej1'), { ...baseCmd, id: 'rej1', action: 'rejoin', package: 'com.roblox.client', force: false }));
+  await assertSucceeds(set(ref(db, base + '/devices/deviceA/inbox/reja1'), { ...baseCmd, id: 'reja1', action: 'rejoin_all', force: true }));
   await assertFails(set(ref(db, base + '/devices/deviceA/inbox/bad1'), { ...baseCmd, id: 'bad1', action: 'rejoin', package: 'com.android.settings' }));
   await assertFails(set(ref(db, base + '/devices/deviceA/inbox/bad2'), { ...baseCmd, id: 'bad2', action: 'set_rejoin_config', config: { ...config, checkIntervalSec: 1 } }));
 });

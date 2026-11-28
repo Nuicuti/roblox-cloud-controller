@@ -1041,6 +1041,18 @@ export default function Dashboard() {
                                     Tiến trình: {profile.running && online ? "Đang chạy" : "Đã tắt"}
                                   </span>
 
+                                  {profile.running && online && profile.inGameOnline === true && (
+                                    <span className="status-pill green">Online trong game</span>
+                                  )}
+
+                                  {profile.running &&
+                                    online &&
+                                    profile.inGameOnline === false &&
+                                    profile.healthState !== "booting" &&
+                                    profile.healthState !== "disconnected" && (
+                                      <span className="status-pill yellow">Ở sảnh / Chưa vào server</span>
+                                    )}
+
                                   {profile.running && online && typeof profile.ramMb === "number" && (
                                     <span
                                       className={`status-pill ${
@@ -1109,9 +1121,9 @@ export default function Dashboard() {
                                   className="row-action"
                                   disabled={blocked}
                                   onClick={() => issue({ action: "rejoin", package: profile.package })}
-                                  title="Tắt hẳn (force-stop) và mở lại riêng tab này"
+                                  title="Giữ nguyên nếu đang online; tự bấm Leave & join lại nếu bị kick; hoặc join thẳng nếu đang ở sảnh"
                                 >
-                                  <RotateCcw size={13} /> Tắt & Mở lại
+                                  <RotateCcw size={13} /> Rejoin
                                 </button>
                                 <button
                                   className="row-action"
@@ -1507,7 +1519,7 @@ export default function Dashboard() {
                       <h3>Sắp xếp cửa sổ</h3>
                     </div>
                     <p className="muted">
-                      Ghi thẳng tọa độ vào cấu hình cửa sổ của APK Noka rồi mở khít toàn màn hình (khuyên dùng 2×3).
+                      Xếp các tab đang chạy về lưới khít màn hình mà <b>không tắt game</b>; chỉ mở thêm các tab chưa chạy.
                     </p>
                     <div className="grid-preview" style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
                       {Array.from({ length: rows * cols }, (_, i) => (
@@ -1584,8 +1596,9 @@ export default function Dashboard() {
                           smart: rows === smartGrid.rows && cols === smartGrid.cols,
                         })
                       }
+                      title="Xếp tất cả tab vào lưới mà không tắt các tab đang chạy online"
                     >
-                      <Grid2X2 size={16} /> Sắp xếp lưới {rows}×{cols}
+                      <Grid2X2 size={16} /> Sắp xếp lưới {rows}×{cols} (Giữ game)
                     </button>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 8 }}>
                       <button
@@ -1657,11 +1670,13 @@ export default function Dashboard() {
                     <p className="muted">
                       {activePlaceId ? (
                         <>
-                          Place ID: <b style={{ color: "#dce4f2" }}>{activePlaceId}</b> · Tự kiểm tra crash &amp;
-                          Disconnect.
+                          Place ID: <b style={{ color: "#dce4f2" }}>{activePlaceId}</b> · Giữ tab online; tự bấm{" "}
+                          <b>Leave</b> khi bị kick để join lại.
                         </>
                       ) : (
-                        "Chưa đặt Place ID · Tự kiểm tra crash & Disconnect."
+                        <>
+                          Chưa đặt Place ID · Giữ tab online; tự bấm <b>Leave</b> khi bị kick để join lại.
+                        </>
                       )}
                     </p>
                     <button
@@ -1669,8 +1684,9 @@ export default function Dashboard() {
                       style={{ marginTop: 12 }}
                       disabled={blocked || !profiles.length}
                       onClick={() => void runOneClickRejoin()}
+                      title="Giữ nguyên tab đang online; nếu hiện chữ Leave/Disconnected sẽ tự bấm Leave để join lại; tab ở sảnh/tắt sẽ vào game"
                     >
-                      <RotateCcw size={16} /> Rejoin tất cả{activePlaceId ? ` (${activePlaceId})` : ""}
+                      <RotateCcw size={16} /> Rejoin thông minh{activePlaceId ? ` (${activePlaceId})` : ""}
                     </button>
                     <button className="text-button full freeform-button" onClick={() => setTab("rejoin")}>
                       <SlidersHorizontal size={14} /> Đổi Place ID / Nâng cao
@@ -1683,6 +1699,14 @@ export default function Dashboard() {
 
                   {showExtraBatch && (
                     <>
+                      <button
+                        className="secondary full"
+                        disabled={blocked || !profiles.length}
+                        onClick={() => issue({ action: "rejoin_all", force: true })}
+                        title="Buộc tắt hẳn (force-stop) tất cả tab đang bật rồi mở lại từ đầu"
+                      >
+                        <RotateCcw size={16} /> Tắt & Mở lại tất cả (Force)
+                      </button>
                       <button className="secondary full" disabled={blocked} onClick={() => issue({ action: "open_all" })}>
                         <Layers3 size={16} /> Mở tất cả đang bật
                       </button>

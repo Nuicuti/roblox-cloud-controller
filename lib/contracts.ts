@@ -44,7 +44,7 @@ export const profileSchema = z.object({
 export const commandSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("scan") }).strict(),
   z.object({ action: z.literal("open_all") }).strict(),
-  z.object({ action: z.literal("rejoin_all") }).strict(),
+  z.object({ action: z.literal("rejoin_all"), force: z.boolean().optional() }).strict(),
   z.object({ action: z.literal("close_all") }).strict(),
   z.object({ action: z.literal("status") }).strict(),
   z.object({ action: z.literal("set_watch"), enabled: z.boolean() }).strict(),
@@ -52,7 +52,7 @@ export const commandSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("profile"), profile: profileSchema }).strict(),
   z.object({ action: z.literal("open"), package: packageSchema }).strict(),
   z.object({ action: z.literal("close"), package: packageSchema }).strict(),
-  z.object({ action: z.literal("rejoin"), package: packageSchema }).strict(),
+  z.object({ action: z.literal("rejoin"), package: packageSchema, force: z.boolean().optional() }).strict(),
   z.object({ action: z.literal("remove_profile"), package: packageSchema }).strict(),
   z.object({ action: z.literal("restore_profiles") }).strict(),
   z.object({ action: z.literal("fullscreen"), package: packageSchema }).strict(),
@@ -120,6 +120,7 @@ export type Profile = z.infer<typeof profileSchema> & {
   retryCount?: number;
   lastRejoinAt?: number;
   ramMb?: number;
+  inGameOnline?: boolean;
 };
 
 export type Result = {
