@@ -78,6 +78,10 @@ object RootShell {
             } catch (_: Exception) {
             }
         }
+        ensureAccessibilityEnabled(packageName)
+    }
+
+    fun ensureAccessibilityEnabled(packageName: String) {
         try {
             val accService = "$packageName/${RejoinAccessibilityService::class.java.name}"
             val currentAcc = run(

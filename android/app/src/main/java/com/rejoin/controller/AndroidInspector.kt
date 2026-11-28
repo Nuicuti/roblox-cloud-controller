@@ -668,6 +668,7 @@ interface AndroidDevice {
     fun uiTreeXml(): String
     fun accessibilityTexts(): Map<String, List<String>>?
     fun isAccessibilityEnabled(): Boolean = false
+    fun ensureAccessibilityEnabled(): Boolean = isAccessibilityEnabled()
     fun memoryInfo(): SystemMemInfo? = null
     fun processRssMb(pkgs: Collection<String>): Map<String, Int> = emptyMap()
     fun clearPackageCache(pkg: String) {}
@@ -730,6 +731,17 @@ class RootAndroidDevice(private val context: Context) : AndroidDevice {
     override fun lastResizeNote(): String? = resizeDiag
 
     override fun isAccessibilityEnabled(): Boolean = RejoinAccessibilityService.isConnected()
+
+    override fun ensureAccessibilityEnabled(): Boolean {
+        if (!RejoinAccessibilityService.isConnected()) {
+            RootShell.ensureAccessibilityEnabled(context.packageName)
+            try {
+                Thread.sleep(350)
+            } catch (_: InterruptedException) {
+            }
+        }
+        return RejoinAccessibilityService.isConnected()
+    }
 
     override fun memoryInfo(): SystemMemInfo? {
         var totalHint = 0

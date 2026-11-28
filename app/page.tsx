@@ -934,9 +934,27 @@ export default function Dashboard() {
                       </label>
                     </div>
                     {current.telemetry.watch && current.telemetry.accessibilityEnabled === false && (
-                      <div style={{ fontSize: 11, color: "#f2cb73" }}>
-                        Gợi ý chống khựng: Hãy mở app <b>Rejoin Control</b> trên Redfinger → <b>Mở cài đặt Accessibility</b>{" "}
-                        và bật quyền cho <i>Rejoin Control</i>.
+                      <div style={{ fontSize: 11, color: "#f2cb73", display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+                        <span>Accessibility chưa bật trên máy (cần để đọc popup lỗi &amp; giảm tải CPU):</span>
+                        {(current.telemetry.buildCode ?? 0) < 35 ? (
+                          <button
+                            type="button"
+                            className="secondary compact"
+                            disabled={pending || demo}
+                            onClick={() => issue({ action: "self_update" })}
+                          >
+                            Cập nhật APK để tự bật
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="secondary compact"
+                            disabled={blocked}
+                            onClick={() => issue({ action: "status" })}
+                          >
+                            Tự bật Accessibility ngay (Root)
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>

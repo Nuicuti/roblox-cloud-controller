@@ -943,11 +943,20 @@ class WatchdogEngine(
                 messages.joinToString("; ")
             }
             "status" -> {
+                val accOk = try {
+                    android.ensureAccessibilityEnabled()
+                } catch (_: Exception) {
+                    android.isAccessibilityEnabled()
+                }
                 try {
                     android.refreshDiagnostics(profiles.keys)
                 } catch (_: Exception) {
                 }
-                "Đã cập nhật trạng thái và chẩn đoán APK."
+                if (accOk) {
+                    "Đã bật Accessibility (Root) và cập nhật trạng thái."
+                } else {
+                    "Đã cập nhật trạng thái (Accessibility đang chờ hệ thống kết nối)."
+                }
             }
             "self_update" -> {
                 val updater = selfUpdater ?: throw AgentException("Thiết bị chưa hỗ trợ tự cập nhật từ xa.")
