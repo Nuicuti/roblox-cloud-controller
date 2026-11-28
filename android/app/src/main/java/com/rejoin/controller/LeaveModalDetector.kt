@@ -34,7 +34,13 @@ object LeaveModalDetector {
 
     private fun isWhiteButtonBg(c: Int): Boolean = luminance(c) >= 195 && isNeutral(c, 28)
 
-    private fun isDarkCardSlate(c: Int): Boolean = luminance(c) in 18..98 && isNeutral(c, 22)
+    private fun isDarkCardSlate(c: Int): Boolean = luminance(c) in 24..102 && isNeutral(c, 22)
+
+    private fun colorDistance(a: Int, b: Int): Int =
+        abs(red(a) - red(b)) + abs(green(a) - green(b)) + abs(blue(a) - blue(b))
+
+    private fun matchesCardBg(c: Int, cardBg: Int): Boolean =
+        isDarkCardSlate(c) && colorDistance(c, cardBg) <= 24
 
     private fun isDarkInk(c: Int): Boolean = luminance(c) <= 135 && isNeutral(c, 36)
 
@@ -230,11 +236,15 @@ object LeaveModalDetector {
         pairedRight: Boolean,
     ): LeaveMatch? {
         val midBtnY = (btnTop + btnBot) / 2
+        val sampleX = if (btnRight + 6 <= canvas.right - 2) btnRight + 6 else (btnLeft - 6).coerceAtLeast(canvas.left + 2)
+        val cardBg = frame.pixels[midBtnY * frame.width + sampleX]
+        if (!isDarkCardSlate(cardBg)) return null
+
         val maxSideSearch = canvas.right - 2
         var cardRight = btnRight + 4
         while (cardRight < maxSideSearch) {
             val c = frame.pixels[midBtnY * frame.width + cardRight]
-            if (!isDarkCardSlate(c)) break
+            if (!matchesCardBg(c, cardBg)) break
             cardRight++
         }
         cardRight = (cardRight - 1).coerceAtLeast(btnRight + 2)
@@ -243,16 +253,22 @@ object LeaveModalDetector {
             var left = btnLeft - 4
             while (left > canvas.left + 2) {
                 val c = frame.pixels[midBtnY * frame.width + left]
-                if (!isDarkCardSlate(c)) break
+                if (!matchesCardBg(c, cardBg)) break
                 left--
             }
             (left + 1).coerceAtMost(btnLeft - 2)
         } else {
-            val rightPad = cardRight - btnRight
+            val rightPad = (cardRight - btnRight).coerceAtLeast(6)
             val btnW = btnRight - btnLeft
-            val symmetricLeft = cx - (cardRight - cx)
-            val fallbackLeft = (btnLeft - btnW - maxOf(12, rightPad * 2)).coerceAtLeast(canvas.left + 4)
-            minOf(symmetricLeft, fallbackLeft).coerceAtLeast(canvas.left + 4)
+            val approxLeft = (cx - (cardRight - cx)).coerceIn(canvas.left + 4, (btnLeft - btnW - rightPad).coerceAtLeast(canvas.left + 4))
+            var left = approxLeft
+            while (left > canvas.left + 2 && matchesCardBg(frame.pixels[midBtnY * frame.width + left - 1], cardBg)) {
+                left--
+            }
+            while (left < btnLeft - btnW && !matchesCardBg(frame.pixels[midBtnY * frame.width + left], cardBg)) {
+                left++
+            }
+            left
         }
 
         val cardW = cardRight - cardLeft + 1
@@ -264,17 +280,16 @@ object LeaveModalDetector {
         val belowEnd = minOf(canvas.bottom, btnBot + maxOf(10, (ch * 0.10).toInt()))
         var belowCardBottom = btnBot
         for (ry in (btnBot + 2)..belowEnd) {
-            val ratio = slateCoverage(frame, ry, cardLeft + 8, cardRight - 8)
+            val ratio = slateCoverage(frame, ry, cardLeft + 8, cardRight - 8, cardBg)
             if (ratio >= 0.60) belowCardBottom = ry else if (ry > btnBot + 4) break
         }
         if (belowCardBottom <= btnBot + 1) return null
 
-        // Trace upward through the card body to find cardTop.
+        // Trace upward through the card body using border padding + row neutrality so full-width text lines never stop early.
         var cardTop = btnTop - 4
         val topLimit = canvas.top + 2
         while (cardTop > topLimit) {
-            val ratio = slateCoverage(frame, cardTop - 1, cardLeft + 8, cardRight - 8)
-            if (ratio < 0.45) break
+            if (!isCardBodyRow(frame, cardTop - 1, cardLeft, cardRight, cardBg)) break
             cardTop--
         }
         val cardH = belowCardBottom - cardTop + 1
@@ -296,7 +311,7 @@ object LeaveModalDetector {
             var bx = cardLeft + 8
             while (bx <= cardRight - 8) {
                 val c = frame.pixels[off + bx]
-                if (isDarkCardSlate(c)) bodySlate++
+                if (matchesCardBg(c, cardBg)) bodySlate++
                 if (isLightText(c)) bodyLightText++
                 if (luminance(c) >= 135) bodyBright++
                 bodyTotal++
@@ -308,16 +323,16 @@ object LeaveModalDetector {
         val slateRatio = bodySlate.toDouble() / bodyTotal
         val lightRatio = bodyLightText.toDouble() / bodyTotal
         val brightRatio = bodyBright.toDouble() / bodyTotal
-        if (slateRatio < 0.52 || lightRatio < 0.006 || brightRatio > 0.40) return null
+        if (slateRatio < 0.50 || lightRatio < 0.006 || brightRatio > 0.42) return null
 
         // Verify the modal has distinct left/right outer boundary inside the canvas (not an edge-to-edge fill).
         val leftMarginW = cardLeft - canvas.left
         val rightMarginW = canvas.right - cardRight
         if (leftMarginW >= 8 && rightMarginW >= 8) {
             val midCardY = (cardTop + bodyBot) / 2
-            val leftOutSlate = slateCoverage(frame, midCardY, canvas.left + 2, cardLeft - 4)
-            val rightOutSlate = slateCoverage(frame, midCardY, cardRight + 4, canvas.right - 2)
-            if (leftOutSlate > 0.90 && rightOutSlate > 0.90) return null
+            val leftOutSlate = slateCoverage(frame, midCardY, canvas.left + 2, cardLeft - 4, cardBg)
+            val rightOutSlate = slateCoverage(frame, midCardY, cardRight + 4, canvas.right - 2, cardBg)
+            if (leftOutSlate > 0.85 && rightOutSlate > 0.85) return null
         }
 
         if (!pairedRight) {
@@ -340,7 +355,7 @@ object LeaveModalDetector {
             val off = py * frame.width
             for (px in leftBtnL..leftBtnR step maxOf(1, (leftBtnR - leftBtnL) / 24)) {
                 val c = frame.pixels[off + px]
-                if (isLightText(c)) lText++ else if (isDarkCardSlate(c)) lDark++
+                if (isLightText(c)) lText++ else if (matchesCardBg(c, cardBg)) lDark++
                 lTotal++
             }
         }
@@ -358,7 +373,35 @@ object LeaveModalDetector {
         )
     }
 
-    private fun slateCoverage(frame: ScreenFrame, y: Int, x0: Int, x1: Int): Double {
+    private fun isCardBodyRow(frame: ScreenFrame, y: Int, cardLeft: Int, cardRight: Int, cardBg: Int): Boolean {
+        if (y !in 0 until frame.height || cardRight - cardLeft < 24) return false
+        val edgeSpan = minOf(12, (cardRight - cardLeft) / 10).coerceAtLeast(4)
+        val leftEdge = slateCoverage(frame, y, cardLeft + 2, cardLeft + edgeSpan, cardBg)
+        val rightEdge = slateCoverage(frame, y, cardRight - edgeSpan, cardRight - 2, cardBg)
+        if (leftEdge >= 0.60 && rightEdge >= 0.60) return true
+        val off = y * frame.width
+        val x0 = cardLeft + 4
+        val x1 = cardRight - 4
+        val step = maxOf(1, (x1 - x0) / 32)
+        var hit = 0
+        var bgHit = 0
+        var total = 0
+        var x = x0
+        while (x <= x1) {
+            val c = frame.pixels[off + x]
+            if (matchesCardBg(c, cardBg)) {
+                hit++
+                bgHit++
+            } else if (isNeutral(c, 28) && luminance(c) in 24..255) {
+                hit++
+            }
+            total++
+            x += step
+        }
+        return total > 0 && hit.toDouble() / total >= 0.72 && bgHit >= 1
+    }
+
+    private fun slateCoverage(frame: ScreenFrame, y: Int, x0: Int, x1: Int, cardBg: Int): Double {
         if (y !in 0 until frame.height || x1 <= x0) return 0.0
         val off = y * frame.width
         val step = maxOf(1, (x1 - x0) / 28)
@@ -366,7 +409,7 @@ object LeaveModalDetector {
         var total = 0
         var x = x0
         while (x <= x1) {
-            if (isDarkCardSlate(frame.pixels[off + x])) hit++
+            if (matchesCardBg(frame.pixels[off + x], cardBg)) hit++
             total++
             x += step
         }

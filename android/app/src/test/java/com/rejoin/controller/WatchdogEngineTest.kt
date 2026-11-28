@@ -807,7 +807,7 @@ class WatchdogEngineTest {
         // 2) Smart rejoin_all keeps online nokaA untouched, taps Leave & rejoins nokaB without closing,
         // sends warm join to nokaC, and opens nokaD — zero force-stops!
         opened.clear()
-        val rejMsg = engine.execute(JSONObject().put("action", "rejoin_all"))
+        val rejMsg = engine.execute(JSONObject().put("action", "rejoin_all"), nowMs = 10_000)
         assertTrue(closed.isEmpty())
         assertFalse(opened.any { it.first == "premium.nokaA" })
         assertTrue(opened.any { it.first == "premium.nokaB" && it.second == "2809202155" })
